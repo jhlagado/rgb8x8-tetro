@@ -4,7 +4,7 @@
 ;
 ; Goal:
 ;   Prove the scanline-tick architecture with the smallest visible program:
-;   a 2x2 white block moved left/right and down by frame-driven gravity while
+;   a 4x4 bitmap shape moved left/right and down by frame-driven gravity while
 ;   the display is scanned one row at a time.
 ;
 ; Controls (MON-3 key codes):
@@ -32,7 +32,7 @@
 ;       byte 1 = green plane
 ;       byte 2 = blue plane
 ;       byte 3 = aux plane (reserved, not currently scanned)
-;   - The rendered object is a 2x2 white block.
+;   - The rendered object is a 4x4 bitmap blitted in white.
 
         ORG     0x4000
 
@@ -55,9 +55,9 @@ MOVE_PERIOD:    EQU     16
 ; Decremented once per full 8-slice pass (in slice 1). Larger = slower fall.
 GRAVITY_PERIOD: EQU     64
 X_MIN:          EQU     0
-X_MAX:          EQU     6
+X_MAX:          EQU     4
 Y_MIN:          EQU     0
-Y_MAX:          EQU     6
+Y_MAX:          EQU     4
 SCAN_MASK_START: EQU    0x01
 
 START:
@@ -338,24 +338,14 @@ COPY_BACK_TO_FRONT:
         LDIR
         RET
 
-; Draw the 2x2 block into the back buffer (same layout as live FB).
+; Draw the active 4x4 bitmap into the back buffer (same layout as live FB).
 RENDER_ACTIVE_TO_BACK:
         LD      A,(PLAYER_X)
         LD      E,A
         LD      D,0
-        LD      HL,PIXEL_MASKS
+        LD      HL,SHIFTED_PIECE_ROWS
         ADD     HL,DE
         LD      A,(HL)
-        LD      B,A
-
-        LD      A,(PLAYER_X)
-        INC     A
-        LD      E,A
-        LD      D,0
-        LD      HL,PIXEL_MASKS
-        ADD     HL,DE
-        LD      A,(HL)
-        OR      B
         LD      C,A
 
         LD      A,(PLAYER_Y)
@@ -365,13 +355,15 @@ RENDER_ACTIVE_TO_BACK:
         LD      D,0
         LD      HL,FRAMEBUFFER_BACK
         ADD     HL,DE
+        LD      B,4
+
+RENDER_SHAPE_ROW:
         CALL    WRITE_WHITE_ROW_MASK
-        ; After call, HL points at this row's blue byte (+2). The next row's
-        ; red is +2 (skip aux in byte 3), not +4 from blue — using +4 from here
-        ; landed on the next row's *green* and made the bottom row the wrong colour.
+        ; WRITE_WHITE_ROW_MASK leaves HL on the blue byte (+2).
+        ; The next row's red byte is therefore only +2 away.
         LD      DE,2
         ADD     HL,DE
-        CALL    WRITE_WHITE_ROW_MASK
+        DJNZ    RENDER_SHAPE_ROW
         RET
 
 ; OR mask C into red, green, and blue of the row (HL = row R on entry).
@@ -401,6 +393,24 @@ PIXEL_MASKS:
         DB      %00000100
         DB      %00000010
         DB      %00000001
+
+; Pre-shifted 4-bit row masks for local x offsets 0..7.
+; A 4-wide solid block becomes:
+; x=0 -> 11110000
+; x=1 -> 01111000
+; x=2 -> 00111100
+; x=3 -> 00011110
+; x=4 -> 00001111
+; x>4 would spill off-screen, so gameplay clamps before that.
+SHIFTED_PIECE_ROWS:
+        DB      %11110000
+        DB      %01111000
+        DB      %00111100
+        DB      %00011110
+        DB      %00001111
+        DB      %00000000
+        DB      %00000000
+        DB      %00000000
 
 PLAYER_X:
         DB      0

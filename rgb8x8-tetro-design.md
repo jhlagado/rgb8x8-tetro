@@ -44,7 +44,7 @@ The game should stay split into three layers:
    Current tetromino type, rotation, and position.
 
 3. **Render projection**
-   Convert board + active piece into the 24-byte RGB scan framebuffer.
+   Convert board + active piece into the 32-byte RGB+Aux scan framebuffer.
 
 That separation is the main reusable architectural idea from the Arduino code.
 
@@ -88,11 +88,64 @@ That matches the scan-native framebuffer model directly.
 
 ## Active piece representation
 
-The Arduino `Tetromino` struct is conceptually good:
+The Arduino `Tetromino` struct is conceptually good, and its piece set / rotation geometry should be treated as the current design reference:
 
 - 7 piece types
 - 4 rotations
 - 4 cells per rotation
+
+The intended piece set is:
+
+- `I`
+- `O`
+- `T`
+- `S`
+- `Z`
+- `J`
+- `L`
+
+The intended rotation geometry is:
+
+```text
+I:
+  rot0: (0,0) (1,0) (2,0) (3,0)
+  rot1: (0,0) (0,1) (0,2) (0,3)
+  rot2: (0,0) (1,0) (2,0) (3,0)
+  rot3: (0,0) (0,1) (0,2) (0,3)
+
+O:
+  rot0..3: (0,0) (1,0) (0,1) (1,1)
+
+T:
+  rot0: (0,0) (1,0) (2,0) (1,1)
+  rot1: (1,0) (0,1) (1,1) (1,2)
+  rot2: (1,0) (0,1) (1,1) (2,1)
+  rot3: (0,0) (0,1) (0,2) (1,1)
+
+S:
+  rot0: (1,0) (2,0) (0,1) (1,1)
+  rot1: (0,0) (0,1) (1,1) (1,2)
+  rot2: (1,0) (2,0) (0,1) (1,1)
+  rot3: (0,0) (0,1) (1,1) (1,2)
+
+Z:
+  rot0: (0,0) (1,0) (1,1) (2,1)
+  rot1: (1,0) (0,1) (1,1) (0,2)
+  rot2: (0,0) (1,0) (1,1) (2,1)
+  rot3: (1,0) (0,1) (1,1) (0,2)
+
+J:
+  rot0: (0,0) (0,1) (1,1) (2,1)
+  rot1: (1,0) (2,0) (1,1) (1,2)
+  rot2: (0,0) (1,0) (2,0) (2,1)
+  rot3: (0,0) (0,1) (0,2) (1,0)
+
+L:
+  rot0: (2,0) (0,1) (1,1) (2,1)
+  rot1: (0,0) (1,0) (1,1) (1,2)
+  rot2: (0,0) (1,0) (2,0) (0,1)
+  rot3: (0,0) (0,1) (0,2) (1,2)
+```
 
 For Z80, the cleaner representation is a packed bitmap per rotation rather than a list of four coordinate pairs.
 
@@ -256,16 +309,16 @@ Rendering should happen in two steps:
 Current scan-native framebuffer:
 
 ```text
-framebuffer[24]
-row0: R,G,B
-row1: R,G,B
+framebuffer[32]
+row0: R,G,B,Aux
+row1: R,G,B,Aux
 ...
-row7: R,G,B
+row7: R,G,B,Aux
 ```
 
 Recommended render flow:
 
-1. clear framebuffer
+1. clear framebuffer or compose into a back buffer
 2. copy landed board colours into framebuffer
 3. overlay active piece colour into framebuffer
 
@@ -315,26 +368,29 @@ Use MON-3 key services and express behavior in frame counters:
 - held repeat
 - repeat period in frames
 
-That matches the current `tetro.asm` direction.
+That matches the current `tetro.asm` direction, including the newer scanline-sliced logic model.
 
 ## What to build next
 
 Recommended progression after `tetro`:
 
-1. **Two-pixel paddle**
-   Still one object, still left/right only.
+1. **4x4 solid test box**
+   Prove the general blitter and scan-sliced rendering path.
 
-2. **Single falling block**
-   Introduces gravity and landing without piece rotation.
+2. **Single non-solid 4x4 bitmap**
+   Swap in a recognizable shape such as `T` or `L`.
 
-3. **2x2 block**
+3. **Board collision**
    First real collision against landed board state.
 
-4. **Board row clear**
+4. **Spawn + lock**
+   Introduce active-piece lifecycle.
+
+5. **Board row clear**
    First scoring / clear behavior.
 
-5. **4x4 bitmap piece table**
-   Add the full piece set.
+6. **Full 7-piece table**
+   Add the full `I O T S Z J L` set with the reference rotation geometry above.
 
 This path keeps the real-time loop stable while the game model grows.
 
