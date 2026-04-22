@@ -1,0 +1,63 @@
+{
+  "projectVersion": 2,
+  "projectPlatform": "tec1g",
+  "defaultProfile": "mon3",
+  "defaultTarget": "tetro",
+  "profiles": {
+    "mon3": {
+      "platform": "tec1g",
+      "description": "TEC-1G monitor-first profile with user code at 0x4000.",
+      "bundledAssets": {
+        "romHex": {
+          "bundleId": "tec1g/mon3/v1",
+          "path": "mon3.bin",
+          "destination": "roms/tec1g/mon3/mon3.bin"
+        },
+        "listing": {
+          "bundleId": "tec1g/mon3/v1",
+          "path": "mon3.lst",
+          "destination": "roms/tec1g/mon3/mon3.lst"
+        }
+      }
+    }
+  },
+  "targets": {
+    "tetro": {
+      "outputDir": "build",
+      "platform": "tec1g",
+      "profile": "mon3",
+      "tec1g": {
+        "regions": [
+          {
+            "start": 0,
+            "end": 2047,
+            "kind": "rom"
+          },
+          {
+            "start": 2048,
+            "end": 32767,
+            "kind": "ram"
+          },
+          {
+            "start": 49152,
+            "end": 65535,
+            "kind": "rom"
+          }
+        ],
+        "appStart": 16384,
+        "entry": 0,
+        "romHex": "roms/tec1g/mon3/mon3.bin",
+        "extraListings": [
+          "roms/tec1g/mon3/mon3.lst"
+        ],
+        "sourceRoots": [
+          "src",
+          "roms/tec1g/mon3"
+        ]
+      },
+      "sourceFile": "src/tetro.asm",
+      "asm": "src/tetro.asm",
+      "artifactBase": "tetro"
+    }
+  }
+}

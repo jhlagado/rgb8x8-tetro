@@ -1,0 +1,451 @@
+; TEC-1G tetro
+; ------------------
+; Minimal interactive 8x8 RGB matrix example for the MON-3 layout.
+;
+; Goal:
+;   Prove the scanline-tick architecture with the smallest visible program:
+;   a 2x2 white block moved left/right and down by frame-driven gravity while
+;   the display is scanned one row at a time.
+;
+; Controls (MON-3 key codes):
+;   left  (0x10) = move left
+;   right (0x11) = move right
+;
+; Design:
+;   - One scanline is output per main-loop iteration.
+;   - The scan state is persistent:
+;       scan_mask = current row enable bit
+;       scan_ptr  = framebuffer pointer for that row
+;   - One full display frame = 8 scan ticks; LOGIC runs after every tick (no
+;     gating on SCAN_MASK) so the CPU budget is spread between scanlines. That
+;     evens the delay between row updates and gives more uniform row on-time
+;     and POV (avoids one long gap every 8 lines).
+;   - Game work is split across 8 slices (LOGIC_SLICE 0-7 on each pass):
+;       slice0: input + clear 4 bytes of back buffer
+;       slice1: gravity + clear 4 bytes
+;       slices 2-6: each clears the next 4 bytes (covering 0..27 in order)
+;       slice7: clear last 4 bytes, render 2x2 to back buffer, LDIR 32B to
+;       visible FB so the on-screen image updates in one copy (no half-drawn
+;       frame in the live buffer).
+;   - The framebuffer is 8 rows x 4 bytes:
+;       byte 0 = red plane
+;       byte 1 = green plane
+;       byte 2 = blue plane
+;       byte 3 = aux plane (reserved, not currently scanned)
+;   - The rendered object is a 2x2 white block.
+
+        ORG     0x4000
+
+; TEC-1G matrix ports
+PORT_ROW:       EQU     0x05
+PORT_RED:       EQU     0x06
+PORT_GREEN:     EQU     0xF8
+PORT_BLUE:      EQU     0xF9
+
+; MON-3 API / keypad constants
+API_SCANKEYS:   EQU     16
+K_LEFT:         EQU     0x10
+K_RIGHT:        EQU     0x11
+
+; Matrix / game constants
+ROW_COUNT:      EQU     8
+BYTES_PER_ROW:  EQU     4
+FRAMEBUFFER_BYTES: EQU  32
+MOVE_PERIOD:    EQU     16
+; Decremented once per full 8-slice pass (in slice 1). Larger = slower fall.
+GRAVITY_PERIOD: EQU     64
+X_MIN:          EQU     0
+X_MAX:          EQU     6
+Y_MIN:          EQU     0
+Y_MAX:          EQU     6
+SCAN_MASK_START: EQU    0x01
+
+START:
+        CALL    INIT_STATE
+
+MAIN_LOOP:
+        CALL    SCAN_TICK
+        CALL    LOGIC_TICK
+        JR      MAIN_LOOP
+
+INIT_STATE:
+        LD      A,3
+        LD      (PLAYER_X),A
+        LD      A,0
+        LD      (PLAYER_Y),A
+
+        LD      A,MOVE_PERIOD
+        LD      (MOVE_COOLDOWN),A
+        LD      A,GRAVITY_PERIOD
+        LD      (GRAVITY_COOLDOWN),A
+
+        XOR     A
+        LD      (LAST_KEY),A
+        LD      (FRAME_PHASE),A
+        LD      (LOGIC_SLICE),A
+
+        LD      A,SCAN_MASK_START
+        LD      (SCAN_MASK),A
+
+        LD      HL,FRAMEBUFFER
+        LD      (SCAN_PTR),HL
+
+        JP      REBUILD_FRAMEBUFFER
+
+; Output one scanline, then advance persistent scan state.
+SCAN_TICK:
+        XOR     A
+        OUT     (PORT_ROW),A
+
+        LD      HL,(SCAN_PTR)
+
+        LD      A,(HL)
+        OUT     (PORT_RED),A
+        INC     HL
+
+        LD      A,(HL)
+        OUT     (PORT_GREEN),A
+        INC     HL
+
+        LD      A,(HL)
+        OUT     (PORT_BLUE),A
+
+        LD      A,(SCAN_MASK)
+        OUT     (PORT_ROW),A
+
+        CALL    ADVANCE_SCAN_STATE
+        RET
+
+ADVANCE_SCAN_STATE:
+        LD      A,(SCAN_MASK)
+        RLC     A
+        LD      (SCAN_MASK),A
+
+        LD      HL,(SCAN_PTR)
+        LD      DE,BYTES_PER_ROW
+        ADD     HL,DE
+
+        CP      SCAN_MASK_START
+        JR      NZ,SAVE_NEXT_SCAN_PTR
+
+        LD      HL,FRAMEBUFFER
+        LD      A,(FRAME_PHASE)
+        INC     A
+        LD      (FRAME_PHASE),A
+
+SAVE_NEXT_SCAN_PTR:
+        LD      (SCAN_PTR),HL
+        RET
+
+; Run one slice of logic per main-loop pass (1 slice per scanline, 0..7 then wrap).
+; Distributes work so each inter-row interval is similar, helping even brightness/POV.
+LOGIC_TICK:
+        LD      A,(LOGIC_SLICE)
+        AND     7
+        CP      0
+        JR      Z,LOGIC_SL0
+        CP      1
+        JR      Z,LOGIC_SL1
+        CP      2
+        JR      Z,LOGIC_SL2
+        CP      3
+        JR      Z,LOGIC_SL3
+        CP      4
+        JR      Z,LOGIC_SL4
+        CP      5
+        JR      Z,LOGIC_SL5
+        CP      6
+        JR      Z,LOGIC_SL6
+; --- slice 7: final 4B clear, render to back buffer, copy to live framebuffer
+        LD      A,28
+        CALL    CLEAR_BACK_4
+        CALL    RENDER_ACTIVE_TO_BACK
+        CALL    COPY_BACK_TO_FRONT
+        JR      LOGIC_SLICE_NEXT
+
+LOGIC_SL0:
+        CALL    POLL_INPUT_AND_UPDATE
+        XOR     A
+        CALL    CLEAR_BACK_4
+        JR      LOGIC_SLICE_NEXT
+
+LOGIC_SL1:
+        CALL    APPLY_GRAVITY
+        LD      A,4
+        CALL    CLEAR_BACK_4
+        JR      LOGIC_SLICE_NEXT
+
+LOGIC_SL2:
+        LD      A,8
+        CALL    CLEAR_BACK_4
+        JR      LOGIC_SLICE_NEXT
+
+LOGIC_SL3:
+        LD      A,12
+        CALL    CLEAR_BACK_4
+        JR      LOGIC_SLICE_NEXT
+
+LOGIC_SL4:
+        LD      A,16
+        CALL    CLEAR_BACK_4
+        JR      LOGIC_SLICE_NEXT
+
+LOGIC_SL5:
+        LD      A,20
+        CALL    CLEAR_BACK_4
+        JR      LOGIC_SLICE_NEXT
+
+LOGIC_SL6:
+        LD      A,24
+        CALL    CLEAR_BACK_4
+        ; fall through
+
+LOGIC_SLICE_NEXT:
+        LD      HL,LOGIC_SLICE
+        LD      A,(HL)
+        INC     A
+        AND     7
+        LD      (HL),A
+        RET
+
+; Poll MON-3 keypad state and update PLAYER_X at a controlled rate.
+;
+; scanKeys return contract:
+;   Z  = key is pressed
+;   C  = new key press
+;   NZ = no key / invalid key
+;   A  = key code
+POLL_INPUT_AND_UPDATE:
+        LD      C,API_SCANKEYS
+        RST     0x10
+        JR      NZ,RESET_MOVE_RATE
+
+        CP      K_LEFT
+        JR      Z,HANDLE_KEY_LEFT
+        CP      K_RIGHT
+        JR      Z,HANDLE_KEY_RIGHT
+
+RESET_MOVE_RATE:
+        LD      A,MOVE_PERIOD
+        LD      (MOVE_COOLDOWN),A
+        XOR     A
+        LD      (LAST_KEY),A
+        RET
+
+HANDLE_KEY_RIGHT:
+        LD      A,K_RIGHT
+        JP      HANDLE_HELD_DIRECTION
+
+HANDLE_KEY_LEFT:
+        LD      A,K_LEFT
+        ; fall through
+
+; Input:
+;   A = direction key (K_LEFT or K_RIGHT)
+HANDLE_HELD_DIRECTION:
+        LD      E,A
+        LD      A,(LAST_KEY)
+        CP      E
+        JR      Z,SAME_DIRECTION
+
+        LD      A,E
+        LD      (LAST_KEY),A
+        LD      A,1
+        LD      (MOVE_COOLDOWN),A
+
+SAME_DIRECTION:
+        LD      A,(MOVE_COOLDOWN)
+        DEC     A
+        LD      (MOVE_COOLDOWN),A
+        RET     NZ
+
+        LD      A,MOVE_PERIOD
+        LD      (MOVE_COOLDOWN),A
+        LD      A,E
+        CP      K_LEFT
+        JR      Z,MOVE_LEFT
+
+MOVE_RIGHT:
+        LD      A,(PLAYER_X)
+        CP      X_MAX
+        RET     Z
+        INC     A
+        LD      (PLAYER_X),A
+        RET
+
+MOVE_LEFT:
+        LD      A,(PLAYER_X)
+        OR      A
+        RET     Z
+        DEC     A
+        LD      (PLAYER_X),A
+        RET
+
+APPLY_GRAVITY:
+        LD      A,(GRAVITY_COOLDOWN)
+        DEC     A
+        LD      (GRAVITY_COOLDOWN),A
+        RET     NZ
+
+        LD      A,GRAVITY_PERIOD
+        LD      (GRAVITY_COOLDOWN),A
+
+        LD      A,(PLAYER_Y)
+        CP      Y_MAX
+        RET     Z
+        INC     A
+        LD      (PLAYER_Y),A
+        RET
+
+; Full rebuild (used at init). Build in back buffer, then copy to live FB.
+REBUILD_FRAMEBUFFER:
+        CALL    CLEAR_BACK_ALL
+        CALL    RENDER_ACTIVE_TO_BACK
+        JP      COPY_BACK_TO_FRONT
+
+; Clear all 32 bytes of the back buffer (init or if you need a full clear).
+CLEAR_BACK_ALL:
+        LD      HL,FRAMEBUFFER_BACK
+        LD      B,FRAMEBUFFER_BYTES
+        XOR     A
+CLEAR_BACK_ALL_LOOP:
+        LD      (HL),A
+        INC     HL
+        DJNZ    CLEAR_BACK_ALL_LOOP
+        RET
+
+; Clear 4 bytes at FRAMEBUFFER_BACK + A (A = 0,4,8,...,28).
+CLEAR_BACK_4:
+        LD      E,A
+        LD      D,0
+        LD      HL,FRAMEBUFFER_BACK
+        ADD     HL,DE
+        XOR     A
+        LD      (HL),A
+        INC     HL
+        LD      (HL),A
+        INC     HL
+        LD      (HL),A
+        INC     HL
+        LD      (HL),A
+        RET
+
+; Copy composed back buffer to the framebuffer the scanout reads.
+COPY_BACK_TO_FRONT:
+        LD      HL,FRAMEBUFFER_BACK
+        LD      DE,FRAMEBUFFER
+        LD      BC,FRAMEBUFFER_BYTES
+        LDIR
+        RET
+
+; Draw the 2x2 block into the back buffer (same layout as live FB).
+RENDER_ACTIVE_TO_BACK:
+        LD      A,(PLAYER_X)
+        LD      E,A
+        LD      D,0
+        LD      HL,PIXEL_MASKS
+        ADD     HL,DE
+        LD      A,(HL)
+        LD      B,A
+
+        LD      A,(PLAYER_X)
+        INC     A
+        LD      E,A
+        LD      D,0
+        LD      HL,PIXEL_MASKS
+        ADD     HL,DE
+        LD      A,(HL)
+        OR      B
+        LD      C,A
+
+        LD      A,(PLAYER_Y)
+        ADD     A,A
+        ADD     A,A
+        LD      E,A
+        LD      D,0
+        LD      HL,FRAMEBUFFER_BACK
+        ADD     HL,DE
+        CALL    WRITE_WHITE_ROW_MASK
+        ; After call, HL points at this row's blue byte (+2). The next row's
+        ; red is +2 (skip aux in byte 3), not +4 from blue — using +4 from here
+        ; landed on the next row's *green* and made the bottom row the wrong colour.
+        LD      DE,2
+        ADD     HL,DE
+        CALL    WRITE_WHITE_ROW_MASK
+        RET
+
+; OR mask C into red, green, and blue of the row (HL = row R on entry).
+; On exit, HL = this row's blue (aux byte 3 not used by scan, not written).
+WRITE_WHITE_ROW_MASK:
+        LD      A,(HL)
+        OR      C
+        LD      (HL),A
+        INC     HL
+
+        LD      A,(HL)
+        OR      C
+        LD      (HL),A
+        INC     HL
+
+        LD      A,(HL)
+        OR      C
+        LD      (HL),A
+        RET
+
+PIXEL_MASKS:
+        DB      %10000000
+        DB      %01000000
+        DB      %00100000
+        DB      %00010000
+        DB      %00001000
+        DB      %00000100
+        DB      %00000010
+        DB      %00000001
+
+PLAYER_X:
+        DB      0
+
+PLAYER_Y:
+        DB      0
+
+MOVE_COOLDOWN:
+        DB      0
+
+GRAVITY_COOLDOWN:
+        DB      0
+
+LAST_KEY:
+        DB      0
+
+FRAME_PHASE:
+        DB      0
+
+LOGIC_SLICE:
+        DB      0
+
+SCAN_MASK:
+        DB      0
+
+SCAN_PTR:
+        DW      0
+
+FRAMEBUFFER:
+        DB      0,0,0,0
+        DB      0,0,0,0
+        DB      0,0,0,0
+        DB      0,0,0,0
+        DB      0,0,0,0
+        DB      0,0,0,0
+        DB      0,0,0,0
+        DB      0,0,0,0
+
+; Off-screen compose buffer; visible FB is updated atomically from here in slice 7.
+FRAMEBUFFER_BACK:
+        DB      0,0,0,0
+        DB      0,0,0,0
+        DB      0,0,0,0
+        DB      0,0,0,0
+        DB      0,0,0,0
+        DB      0,0,0,0
+        DB      0,0,0,0
+        DB      0,0,0,0

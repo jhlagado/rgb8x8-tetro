@@ -1,0 +1,13 @@
+### Debug80 (do not remove this line) ###
+# Extension cache and session data
+.debug80/
+# Assembled output (scaffold default is "build/"; match your debug80.json outputDir)
+build/
+out/
+dist/
+# Optional local launch; the extension also contributes "Debug80: Current Project"
+.vscode/launch.json
+# OS / editor
+.DS_Store
+Thumbs.db
+### end Debug80 ###
