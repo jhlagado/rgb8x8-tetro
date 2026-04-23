@@ -24,15 +24,16 @@
 ;       slice0: input + clear 4 bytes of back buffer
 ;       slice1: gravity + clear 4 bytes
 ;       slices 2-6: each clears the next 4 bytes (covering 0..27 in order)
-;       slice7: clear last 4 bytes, render 2x2 to back buffer, LDIR 32B to
-;       visible FB so the on-screen image updates in one copy (no half-drawn
-;       frame in the live buffer).
+;       slice7: clear last 4 bytes, render 4x4 bitmap to back buffer, LDIR
+;       32B to visible FB so the on-screen image updates in one copy (no
+;       half-drawn frame in the live buffer).
 ;   - The framebuffer is 8 rows x 4 bytes:
 ;       byte 0 = red plane
 ;       byte 1 = green plane
 ;       byte 2 = blue plane
 ;       byte 3 = aux plane (reserved, not currently scanned)
 ;   - The rendered object is a 4x4 bitmap blitted in white.
+;   - Current test shape: T piece, rotation 0.
 
         ORG     0x4000
 
@@ -340,14 +341,6 @@ COPY_BACK_TO_FRONT:
 
 ; Draw the active 4x4 bitmap into the back buffer (same layout as live FB).
 RENDER_ACTIVE_TO_BACK:
-        LD      A,(PLAYER_X)
-        LD      E,A
-        LD      D,0
-        LD      HL,SHIFTED_PIECE_ROWS
-        ADD     HL,DE
-        LD      A,(HL)
-        LD      C,A
-
         LD      A,(PLAYER_Y)
         ADD     A,A
         ADD     A,A
@@ -355,14 +348,26 @@ RENDER_ACTIVE_TO_BACK:
         LD      D,0
         LD      HL,FRAMEBUFFER_BACK
         ADD     HL,DE
+
+        LD      A,(PLAYER_X)
+        ADD     A,A
+        ADD     A,A
+        LD      E,A
+        LD      D,0
+        PUSH    HL
+        LD      HL,PIECE_T0_ROWS
+        ADD     HL,DE
+        EX      DE,HL
+        POP     HL
         LD      B,4
 
 RENDER_SHAPE_ROW:
+        LD      A,(DE)
+        LD      C,A
         CALL    WRITE_WHITE_ROW_MASK
-        ; WRITE_WHITE_ROW_MASK leaves HL on the blue byte (+2).
-        ; The next row's red byte is therefore only +2 away.
-        LD      DE,2
-        ADD     HL,DE
+        INC     HL
+        INC     HL
+        INC     DE
         DJNZ    RENDER_SHAPE_ROW
         RET
 
@@ -383,34 +388,6 @@ WRITE_WHITE_ROW_MASK:
         OR      C
         LD      (HL),A
         RET
-
-PIXEL_MASKS:
-        DB      %10000000
-        DB      %01000000
-        DB      %00100000
-        DB      %00010000
-        DB      %00001000
-        DB      %00000100
-        DB      %00000010
-        DB      %00000001
-
-; Pre-shifted 4-bit row masks for local x offsets 0..7.
-; A 4-wide solid block becomes:
-; x=0 -> 11110000
-; x=1 -> 01111000
-; x=2 -> 00111100
-; x=3 -> 00011110
-; x=4 -> 00001111
-; x>4 would spill off-screen, so gameplay clamps before that.
-SHIFTED_PIECE_ROWS:
-        DB      %11110000
-        DB      %01111000
-        DB      %00111100
-        DB      %00011110
-        DB      %00001111
-        DB      %00000000
-        DB      %00000000
-        DB      %00000000
 
 PLAYER_X:
         DB      0
@@ -459,3 +436,12 @@ FRAMEBUFFER_BACK:
         DB      0,0,0,0
         DB      0,0,0,0
         DB      0,0,0,0
+
+; Current test bitmap: T piece, rotation 0, pre-shifted for x = 0..4.
+; Each 4-byte group is the 4 local rows for one horizontal position.
+PIECE_T0_ROWS:
+        DB      %11100000, %01000000, %00000000, %00000000
+        DB      %01110000, %00100000, %00000000, %00000000
+        DB      %00111000, %00010000, %00000000, %00000000
+        DB      %00011100, %00001000, %00000000, %00000000
+        DB      %00001110, %00000100, %00000000, %00000000

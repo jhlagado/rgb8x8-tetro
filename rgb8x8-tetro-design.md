@@ -326,6 +326,7 @@ For a first falling-block game, colour can stay simple:
 
 - each piece type owns one RGB colour
 - landed blocks keep their piece colour
+- the original orange `L` reference colour is not available on 3-bit RGB hardware, so use white as the current substitute
 
 ## Colour model
 

@@ -14,12 +14,12 @@ This is intentionally minimal. It exists to prove the full interactive loop:
 - update a tiny bit of game state once per full display frame
 - rebuild the framebuffer from logical state
 
-The visible result is a 2x2 white block that moves left and right.
+The visible result is a white `T`-shape that moves left and right and falls under gravity.
 
 ## Controls
 
-- `+` moves left
-- `-` moves right
+- left key moves left
+- right key moves right
 
 ## Why this shape
 
@@ -34,7 +34,7 @@ This target therefore keeps the design narrow:
 - framebuffer uses the new 32-byte layout: `R,G,B,Aux` for each of 8 rows
 - keypad polling uses MON-3 `scanKeys`
 - movement is frame-gated so a held key does not step every scan tick
-- only one simple 2x2 block is drawn
+- one 4x4-bitmap test shape is drawn
 
 Once this loop is solid, more ambitious layers can be added on top:
 
