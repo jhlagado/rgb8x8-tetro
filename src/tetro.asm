@@ -59,9 +59,9 @@ BYTES_PER_ROW:  EQU     4
 FRAMEBUFFER_BYTES: EQU  32
 MOVE_PERIOD:    EQU     16
 ; Decremented once per full 8-slice pass (in slice 1). Larger = slower fall.
-GRAVITY_PERIOD: EQU     64
+GRAVITY_PERIOD: EQU     128
 X_MIN:          EQU     0
-X_MAX:          EQU     4
+X_MAX:          EQU     5
 Y_MIN:          EQU     0
 Y_MAX:          EQU     4
 SCAN_MASK_START: EQU    0x01
@@ -273,10 +273,16 @@ MOVE_RIGHT:
         CP      X_MAX
         RET     Z
         INC     A
-        LD      (PENDING_POS),A
-        CALL    CHECK_COLLISION_AT_CURRENT_Y
+        LD      (PENDING_X),A
+        LD      A,(PLAYER_Y)
+        LD      (PENDING_Y),A
+        LD      A,(PENDING_X)
+        LD      D,A
+        LD      A,(PENDING_Y)
+        LD      E,A
+        CALL    CHECK_COLLISION_AT_DE
         RET     C
-        LD      A,(PENDING_POS)
+        LD      A,(PENDING_X)
         LD      (PLAYER_X),A
         RET
 
@@ -285,10 +291,16 @@ MOVE_LEFT:
         OR      A
         RET     Z
         DEC     A
-        LD      (PENDING_POS),A
-        CALL    CHECK_COLLISION_AT_CURRENT_Y
+        LD      (PENDING_X),A
+        LD      A,(PLAYER_Y)
+        LD      (PENDING_Y),A
+        LD      A,(PENDING_X)
+        LD      D,A
+        LD      A,(PENDING_Y)
+        LD      E,A
+        CALL    CHECK_COLLISION_AT_DE
         RET     C
-        LD      A,(PENDING_POS)
+        LD      A,(PENDING_X)
         LD      (PLAYER_X),A
         RET
 
@@ -301,12 +313,18 @@ APPLY_GRAVITY:
         LD      A,GRAVITY_PERIOD
         LD      (GRAVITY_COOLDOWN),A
 
+        LD      A,(PLAYER_X)
+        LD      (PENDING_X),A
         LD      A,(PLAYER_Y)
         INC     A
-        LD      (PENDING_POS),A
-        CALL    CHECK_COLLISION_AT_CURRENT_X
+        LD      (PENDING_Y),A
+        LD      A,(PENDING_X)
+        LD      D,A
+        LD      A,(PENDING_Y)
+        LD      E,A
+        CALL    CHECK_COLLISION_AT_DE
         JR      C,LOCK_ACTIVE_PIECE
-        LD      A,(PENDING_POS)
+        LD      A,(PENDING_Y)
         LD      (PLAYER_Y),A
         RET
 
@@ -379,7 +397,14 @@ SPAWN_ACTIVE_PIECE:
         XOR     A
         LD      (LAST_KEY),A
         LD      A,3
-        CALL    CHECK_COLLISION_AT_CURRENT_Y
+        LD      (PENDING_X),A
+        XOR     A
+        LD      (PENDING_Y),A
+        LD      A,(PENDING_X)
+        LD      D,A
+        LD      A,(PENDING_Y)
+        LD      E,A
+        CALL    CHECK_COLLISION_AT_DE
         RET     NC
         CALL    CLEAR_BOARD
         LD      A,3
@@ -414,19 +439,13 @@ RENDER_ACTIVE_TO_BACK:
         ADD     HL,DE
 
         LD      A,(PLAYER_X)
-        ADD     A,A
-        ADD     A,A
-        LD      E,A
-        LD      D,0
-        PUSH    HL
-        LD      HL,PIECE_T0_ROWS
-        ADD     HL,DE
-        EX      DE,HL
-        POP     HL
+        LD      (SHIFT_COUNT),A
+        LD      DE,PIECE_T0
         LD      B,4
 
 RENDER_SHAPE_ROW:
         LD      A,(DE)
+        CALL    SHIFT_ROW_MASK
         LD      C,A
         CALL    WRITE_WHITE_ROW_MASK
         INC     HL
@@ -435,43 +454,36 @@ RENDER_SHAPE_ROW:
         DJNZ    RENDER_SHAPE_ROW
         RET
 
-CHECK_COLLISION_AT_CURRENT_Y:
-        LD      D,A
-        LD      A,(PLAYER_Y)
-        JR      CHECK_COLLISION_COMMON
-
-CHECK_COLLISION_AT_CURRENT_X:
-        LD      D,A
-        LD      A,(PLAYER_X)
-
-CHECK_COLLISION_COMMON:
-        LD      E,A
+; Candidate placement test.
+; Input:
+;   D = candidate x
+;   E = candidate y
+CHECK_COLLISION_AT_DE:
         LD      A,D
         CP      X_MIN
         JR      C,COLLISION_TRUE
         CP      X_MAX+1
         JR      NC,COLLISION_TRUE
+        LD      (SHIFT_COUNT),A
         LD      A,E
         CP      Y_MAX+1
         JR      NC,COLLISION_TRUE
 
         PUSH    DE
-        LD      A,D
-        ADD     A,A
-        ADD     A,A
-        LD      E,A
-        LD      D,0
-        LD      HL,PIECE_T0_ROWS
-        ADD     HL,DE
+        LD      HL,PIECE_T0
         EX      DE,HL
 
-        POP     HL
+        POP     DE
+        LD      A,E
+        LD      L,A
+        LD      H,0
         LD      BC,BOARD_ROWS
         ADD     HL,BC
         LD      B,4
 
 CHECK_COLLISION_ROW:
         LD      A,(DE)
+        CALL    SHIFT_ROW_MASK
         LD      C,A
         LD      A,(HL)
         AND     C
@@ -487,13 +499,8 @@ COLLISION_TRUE:
 
 MERGE_ACTIVE_TO_BOARD:
         LD      A,(PLAYER_X)
-        ADD     A,A
-        ADD     A,A
-        LD      E,A
-        LD      D,0
-        LD      HL,PIECE_T0_ROWS
-        ADD     HL,DE
-        EX      DE,HL
+        LD      (SHIFT_COUNT),A
+        LD      DE,PIECE_T0
 
         LD      A,(PLAYER_Y)
         LD      L,A
@@ -504,6 +511,7 @@ MERGE_ACTIVE_TO_BOARD:
 
 MERGE_BOARD_ROW:
         LD      A,(DE)
+        CALL    SHIFT_ROW_MASK
         LD      C,A
         LD      A,(HL)
         OR      C
@@ -531,14 +539,28 @@ WRITE_WHITE_ROW_MASK:
         LD      (HL),A
         RET
 
-; Current test bitmap: T piece, rotation 0, pre-shifted for x = 0..4.
-; Each 4-byte group is the 4 local rows for one horizontal position.
-PIECE_T0_ROWS:
-        DB      %00000000, %00000000, %11100000, %01000000
-        DB      %00000000, %00000000, %01110000, %00100000
-        DB      %00000000, %00000000, %00111000, %00010000
-        DB      %00000000, %00000000, %00011100, %00001000
-        DB      %00000000, %00000000, %00001110, %00000100
+; Shift row mask in A right by SHIFT_COUNT positions to place it at global x.
+SHIFT_ROW_MASK:
+        LD      C,A
+        LD      A,(SHIFT_COUNT)
+        OR      A
+        JR      Z,SHIFT_ROW_DONE
+SHIFT_ROW_LOOP:
+        SRL     C
+        DEC     A
+        JR      NZ,SHIFT_ROW_LOOP
+SHIFT_ROW_DONE:
+        LD      A,C
+        RET
+
+; Current test bitmap: T piece, rotation 0.
+; Stored once, bottom-aligned in the 4x4 box. Horizontal placement is applied
+; at runtime by shifting each row mask right by PLAYER_X / candidate x.
+PIECE_T0:
+        DB      %00000000
+        DB      %00000000
+        DB      %11100000
+        DB      %01000000
 
 ; RAM layout.
 ; These bytes are mutable program state. INIT_STATE sets explicit defaults
@@ -560,6 +582,15 @@ LAST_KEY:
         DS      1
 
 PENDING_POS:
+        DS      1
+
+PENDING_X:
+        DS      1
+
+PENDING_Y:
+        DS      1
+
+SHIFT_COUNT:
         DS      1
 
 FRAME_PHASE:
