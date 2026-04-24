@@ -74,6 +74,13 @@ MAIN_LOOP:
         CALL    LOGIC_TICK
         JR      MAIN_LOOP
 
+; INIT_STATE
+; Input:
+;   none
+; Output:
+;   initialized runtime state in RAM
+; Clobbers:
+;   A, HL
 INIT_STATE:
         LD      A,MOVE_PERIOD
         LD      (MOVE_COOLDOWN),A
@@ -96,6 +103,13 @@ INIT_STATE:
         JP      REBUILD_FRAMEBUFFER
 
 ; Output one scanline, then advance persistent scan state.
+; SCAN_TICK
+; Input:
+;   uses SCAN_PTR / SCAN_MASK from RAM
+; Output:
+;   one matrix row emitted to hardware ports
+; Clobbers:
+;   A, HL
 SCAN_TICK:
         XOR     A
         OUT     (PORT_ROW),A
@@ -119,6 +133,13 @@ SCAN_TICK:
         CALL    ADVANCE_SCAN_STATE
         RET
 
+; ADVANCE_SCAN_STATE
+; Input:
+;   uses SCAN_MASK / SCAN_PTR from RAM
+; Output:
+;   updated SCAN_MASK / SCAN_PTR, FRAME_PHASE incremented on wrap
+; Clobbers:
+;   A, HL, DE
 ADVANCE_SCAN_STATE:
         LD      A,(SCAN_MASK)
         RLC     A
@@ -142,6 +163,13 @@ SAVE_NEXT_SCAN_PTR:
 
 ; Run one slice of logic per main-loop pass (1 slice per scanline, 0..7 then wrap).
 ; Distributes work so each inter-row interval is similar, helping even brightness/POV.
+; LOGIC_TICK
+; Input:
+;   uses LOGIC_SLICE from RAM
+; Output:
+;   one logic slice executed, LOGIC_SLICE advanced
+; Clobbers:
+;   A, HL, and whatever the called slice routines clobber
 LOGIC_TICK:
         LD      A,(LOGIC_SLICE)
         AND     7
@@ -218,6 +246,13 @@ LOGIC_SLICE_NEXT:
 ;   C  = new key press
 ;   NZ = no key / invalid key
 ;   A  = key code
+; POLL_INPUT_AND_UPDATE
+; Input:
+;   none
+; Output:
+;   may update PLAYER_X / MOVE_COOLDOWN / LAST_KEY
+; Clobbers:
+;   A, C, D, E
 POLL_INPUT_AND_UPDATE:
         LD      C,API_SCANKEYS
         RST     0x10
@@ -245,6 +280,13 @@ HANDLE_KEY_LEFT:
 
 ; Input:
 ;   A = direction key (K_LEFT or K_RIGHT)
+; HANDLE_HELD_DIRECTION
+; Input:
+;   A = direction key code
+; Output:
+;   may update PLAYER_X / MOVE_COOLDOWN / LAST_KEY
+; Clobbers:
+;   A, D, E
 HANDLE_HELD_DIRECTION:
         LD      E,A
         LD      A,(LAST_KEY)
@@ -268,6 +310,13 @@ SAME_DIRECTION:
         CP      K_LEFT
         JR      Z,MOVE_LEFT
 
+; MOVE_RIGHT
+; Input:
+;   none
+; Output:
+;   may increment PLAYER_X if candidate placement is legal
+; Clobbers:
+;   A, D, E
 MOVE_RIGHT:
         LD      A,(PLAYER_X)
         CP      X_MAX
@@ -286,6 +335,13 @@ MOVE_RIGHT:
         LD      (PLAYER_X),A
         RET
 
+; MOVE_LEFT
+; Input:
+;   none
+; Output:
+;   may decrement PLAYER_X if candidate placement is legal
+; Clobbers:
+;   A, D, E
 MOVE_LEFT:
         LD      A,(PLAYER_X)
         OR      A
@@ -304,6 +360,13 @@ MOVE_LEFT:
         LD      (PLAYER_X),A
         RET
 
+; APPLY_GRAVITY
+; Input:
+;   none
+; Output:
+;   may update PLAYER_Y, or lock and respawn active piece on collision
+; Clobbers:
+;   A, D, E
 APPLY_GRAVITY:
         LD      A,(GRAVITY_COOLDOWN)
         DEC     A
@@ -334,6 +397,13 @@ LOCK_ACTIVE_PIECE:
         RET
 
 ; Full rebuild (used at init). Build in back buffer, then copy to live FB.
+; REBUILD_FRAMEBUFFER
+; Input:
+;   current board and active-piece state in RAM
+; Output:
+;   FRAMEBUFFER rebuilt from scratch
+; Clobbers:
+;   A, B, C, D, E, HL, BC
 REBUILD_FRAMEBUFFER:
         CALL    CLEAR_BACK_ALL
         CALL    RENDER_BOARD_TO_BACK
@@ -341,6 +411,13 @@ REBUILD_FRAMEBUFFER:
         JP      COPY_BACK_TO_FRONT
 
 ; Clear all 32 bytes of the back buffer (init or if you need a full clear).
+; CLEAR_BACK_ALL
+; Input:
+;   none
+; Output:
+;   FRAMEBUFFER_BACK cleared to zero
+; Clobbers:
+;   A, B, HL
 CLEAR_BACK_ALL:
         LD      HL,FRAMEBUFFER_BACK
         LD      B,FRAMEBUFFER_BYTES
@@ -352,6 +429,13 @@ CLEAR_BACK_ALL_LOOP:
         RET
 
 ; Clear 4 bytes at FRAMEBUFFER_BACK + A (A = 0,4,8,...,28).
+; CLEAR_BACK_4
+; Input:
+;   A = byte offset into FRAMEBUFFER_BACK, expected 0,4,8,...,28
+; Output:
+;   selected 4-byte row cleared
+; Clobbers:
+;   A, D, E, HL
 CLEAR_BACK_4:
         LD      E,A
         LD      D,0
@@ -368,6 +452,13 @@ CLEAR_BACK_4:
         RET
 
 ; Copy composed back buffer to the framebuffer the scanout reads.
+; COPY_BACK_TO_FRONT
+; Input:
+;   FRAMEBUFFER_BACK contains completed image
+; Output:
+;   FRAMEBUFFER overwritten from FRAMEBUFFER_BACK
+; Clobbers:
+;   HL, DE, BC
 COPY_BACK_TO_FRONT:
         LD      HL,FRAMEBUFFER_BACK
         LD      DE,FRAMEBUFFER
@@ -375,6 +466,13 @@ COPY_BACK_TO_FRONT:
         LDIR
         RET
 
+; CLEAR_BOARD
+; Input:
+;   none
+; Output:
+;   BOARD_ROWS cleared to zero
+; Clobbers:
+;   A, B, HL
 CLEAR_BOARD:
         LD      HL,BOARD_ROWS
         LD      B,ROW_COUNT
@@ -385,6 +483,14 @@ CLEAR_BOARD_LOOP:
         DJNZ    CLEAR_BOARD_LOOP
         RET
 
+; SPAWN_ACTIVE_PIECE
+; Input:
+;   none
+; Output:
+;   active-piece state reset to spawn position
+;   may clear BOARD_ROWS if spawn collides immediately
+; Clobbers:
+;   A, D, E
 SPAWN_ACTIVE_PIECE:
         LD      A,3
         LD      (PLAYER_X),A
@@ -413,6 +519,13 @@ SPAWN_ACTIVE_PIECE:
         LD      (PLAYER_Y),A
         RET
 
+; RENDER_BOARD_TO_BACK
+; Input:
+;   BOARD_ROWS, FRAMEBUFFER_BACK
+; Output:
+;   landed board ORed into FRAMEBUFFER_BACK in white
+; Clobbers:
+;   A, B, C, D, E, HL
 RENDER_BOARD_TO_BACK:
         LD      HL,BOARD_ROWS
         LD      DE,FRAMEBUFFER_BACK
@@ -429,6 +542,13 @@ RENDER_BOARD_ROW:
         RET
 
 ; Draw the active 4x4 bitmap into the back buffer (same layout as live FB).
+; RENDER_ACTIVE_TO_BACK
+; Input:
+;   PLAYER_X, PLAYER_Y, PIECE_T0
+; Output:
+;   active piece ORed into FRAMEBUFFER_BACK in white
+; Clobbers:
+;   A, B, C, D, E, HL
 RENDER_ACTIVE_TO_BACK:
         LD      A,(PLAYER_Y)
         ADD     A,A
@@ -458,6 +578,11 @@ RENDER_SHAPE_ROW:
 ; Input:
 ;   D = candidate x
 ;   E = candidate y
+; Output:
+;   carry set if placement collides or is out of bounds
+;   carry clear if placement is legal
+; Clobbers:
+;   A, B, C, D, E, HL, BC
 CHECK_COLLISION_AT_DE:
         LD      A,D
         CP      X_MIN
@@ -497,6 +622,13 @@ COLLISION_TRUE:
         SCF
         RET
 
+; MERGE_ACTIVE_TO_BOARD
+; Input:
+;   PLAYER_X, PLAYER_Y, PIECE_T0
+; Output:
+;   active piece ORed into BOARD_ROWS
+; Clobbers:
+;   A, B, C, D, E, HL, BC
 MERGE_ACTIVE_TO_BOARD:
         LD      A,(PLAYER_X)
         LD      (SHIFT_COUNT),A
@@ -523,6 +655,15 @@ MERGE_BOARD_ROW:
 
 ; OR mask C into red, green, and blue of the row (HL = row R on entry).
 ; On exit, HL = this row's blue (aux byte 3 not used by scan, not written).
+; WRITE_WHITE_ROW_MASK
+; Input:
+;   HL = framebuffer row red-byte address
+;   C  = row mask
+; Output:
+;   mask ORed into red, green, blue bytes
+;   HL = blue-byte address on return
+; Clobbers:
+;   A, HL
 WRITE_WHITE_ROW_MASK:
         LD      A,(HL)
         OR      C
@@ -540,6 +681,14 @@ WRITE_WHITE_ROW_MASK:
         RET
 
 ; Shift row mask in A right by SHIFT_COUNT positions to place it at global x.
+; SHIFT_ROW_MASK
+; Input:
+;   A = unshifted row mask
+;   SHIFT_COUNT = logical x placement
+; Output:
+;   A = shifted row mask
+; Clobbers:
+;   A, C
 SHIFT_ROW_MASK:
         LD      C,A
         LD      A,(SHIFT_COUNT)
