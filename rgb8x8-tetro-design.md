@@ -225,6 +225,17 @@ The practical rotation origin is therefore virtual. The game does not rotate a s
 
 Horizontal storage should also stay left-aligned rather than centered. The useful bounds of a rotation should be derived from its occupied cells, not from visual centering inside the `4x4` container.
 
+Normalization is a storage convention, not the collision rule.
+
+It helps by keeping the stored geometry consistent:
+
+- no dead space below the piece
+- no dead space to the left of the piece
+- more predictable spawn and clipping behavior
+- more meaningful per-rotation bounds metadata
+
+But it should not be treated as the reason collision works. Correct collision comes from testing occupied cells, not from trusting the shape container.
+
 Why this is better for Z80:
 
 - fixed-size data
@@ -288,6 +299,71 @@ Collision logic must make the same distinction:
 
 Spawn logic should therefore allow a piece to exist partially off-screen above the top. A top-out condition happens only when a newly spawned piece cannot legally enter because its visible occupied cells already collide with landed board state.
 
+## Time-sliced peripherals
+
+The same cooperative scan-sliced main loop that drives the `8x8` RGB matrix can also drive simple peripheral output without introducing a separate scheduler.
+
+This is especially relevant for:
+
+- the six-digit `7`-segment display on the TEC-1
+- simple speaker output driven by a toggled bit
+
+The intended model is the same as the matrix scan:
+
+- do a small fixed amount of peripheral work each main-loop pass
+- rely on persistence of vision for multiplexed visual hardware
+- keep each task bounded so the overall row-to-row timing stays reasonably even
+
+### Seven-segment scoring
+
+The `7`-segment display is a good fit for score or small HUD data.
+
+Recommended use:
+
+- keep score/state as logical values in RAM
+- maintain a small digit buffer for what should be shown
+- scan one digit, or a very small number of digits, per loop pass
+- let persistence of vision create the stable readout
+
+This should be treated as another time-sliced display task, not as a blocking redraw routine.
+
+It belongs naturally in the same main-loop scheduling model as the RGB matrix.
+
+### Simple speaker output
+
+Simple sound effects can also fit the same model.
+
+Recommended scope:
+
+- short beeps or clicks when a piece locks
+- short effects for line clear or state changes
+- no assumption of rich music or complex waveform synthesis
+
+A practical first model is:
+
+- maintain a small sound state in RAM
+- on each loop pass, update a divider or countdown
+- when due, toggle the speaker control bit
+
+That keeps sound generation cooperative and bounded, just like the display scan tasks.
+
+### Scheduling implications
+
+Adding these peripherals does not change the architectural rule:
+
+- the main loop remains a cooperative time-sliced scheduler
+- every task must be small and predictable
+- no task should block long enough to disturb matrix persistence noticeably
+
+So the runtime should evolve toward:
+
+- matrix row scan task
+- game logic slice
+- optional `7`-segment scan task
+- optional speaker update task
+
+all sharing the same loop budget.
+
 ## Landed board storage
 
 The first landed-board implementation may use monochrome occupancy only, but the intended game model should preserve piece colour after locking.
@@ -313,6 +389,54 @@ When a piece locks:
 - OR that row mask into each landed colour plane selected by the piece's 3-bit RGB colour mask
 
 This keeps shape geometry independent from colour and matches the scan-native framebuffer model directly.
+
+## Collision strategy
+
+True collision detection should be done by occupied-bit overlap on each relevant scanline.
+
+For a candidate placement:
+
+1. select the rotation bitmap
+2. take each occupied bitmap row
+3. shift it horizontally into board position
+4. compare it against the landed board row it would occupy
+
+The decisive test is:
+
+```text
+shifted_piece_row AND landed_board_row != 0
+```
+
+If that result is nonzero, a collision has occurred.
+
+This applies uniformly to:
+
+- downward movement
+- left movement
+- right movement
+- rotation
+
+The engine should therefore think in terms of validating a candidate placement, not in terms of special-case floor contact.
+
+Examples of what this catches correctly:
+
+- a `T` wing landing on a cliff
+- a hooked shape catching on an overhang
+- lateral movement into an irregular wall of landed cells
+
+## Bounds and extents
+
+Per-rotation extents or bounding boxes may still be useful, but only as coarse helpers.
+
+They are good for:
+
+- quick rejection against walls or floor
+- spawn and clipping rules
+- avoiding unnecessary row-overlap work
+
+They are not sufficient to decide collision on their own.
+
+A bounding box intersection only says that overlap is possible. The real collision decision must still come from occupied-bit overlap on the bitmap rows.
 
 That becomes two time domains:
 
