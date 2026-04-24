@@ -33,6 +33,26 @@ That means:
 
 The current `tetro.asm` already proves that loop shape at the simplest playable-object level.
 
+## Memory layout
+
+Keep the program split into two logical memory classes:
+
+- ROM region:
+  - code
+  - immutable piece tables
+  - lookup tables
+  - constant metadata
+
+- RAM region:
+  - mutable runtime state
+  - scan state
+  - framebuffers
+  - later board state and counters
+
+Do not hard-code a RAM base yet. Instead, define a named RAM block at the end of the program, beginning at `RAM_START`, and let the assembler place it. That keeps the source relocatable for future RAM-loaded or ROM-based layouts.
+
+Any runtime value that must start defined should be initialized by startup code. Do not rely on embedded mutable `DB` values in the code/data region as if they were ROM constants.
+
 ## Logical layers
 
 The game should stay split into three layers:
@@ -149,6 +169,14 @@ L:
 
 For Z80, the cleaner representation is a packed bitmap per rotation rather than a list of four coordinate pairs.
 
+Keep the logical piece footprint at `4x4`, not `3x3`.
+
+Reason:
+
+- six pieces can fit inside `3x3`
+- the `I` piece cannot
+- using `4x4` for every piece keeps rendering, collision, and rotation logic uniform
+
 Recommended shape:
 
 ```text
@@ -171,12 +199,39 @@ I vertical   = 1000 1000 1000 1000
 O piece      = 1100 1100 0000 0000
 ```
 
+Rotations should be precomputed and stored explicitly. Do not rotate the bitmap on the fly.
+
+Reason:
+
+- only 7 pieces x 4 rotations exist
+- stored rotations keep render and collision using the same source data
+- on-the-fly rotation adds avoidable complexity and risk on the Z80
+
+Horizontal placement is a different concern and should be applied at render time by shifting the row mask in registers. Do not store a separate copy of each rotation for every horizontal position.
+
+Each stored rotation should be normalized inside its `4x4` box:
+
+- left-aligned
+- bottom-aligned
+
+That means:
+
+- the leftmost occupied cell should be in local column 0
+- the lowest occupied cell should be in local row 3
+
+This keeps floor checks, landed-board checks, and rendering simpler because there is no dead space below or to the left of the occupied bitmap.
+
+The practical rotation origin is therefore virtual. The game does not rotate a shape around a computed geometric center. It selects a different precomputed, bottom-left-normalized bitmap for the same logical `x,y` and then validates that placement.
+
+Horizontal storage should also stay left-aligned rather than centered. The useful bounds of a rotation should be derived from its occupied cells, not from visual centering inside the `4x4` container.
+
 Why this is better for Z80:
 
 - fixed-size data
 - fixed-cost row extraction
 - easier clipping and collision loops
 - avoids coordinate-table chasing in hot code
+- keeps shape definition separate from placement
 
 ## Active piece state
 
@@ -211,6 +266,53 @@ Recommended outer structure:
 5. process gravity tick if due
 6. rebuild framebuffer
 7. repeat
+
+## Top entry and clipping
+
+Active pieces should not be required to start fully visible.
+
+They should be allowed to begin partially above the visible `8x8` playfield and enter from the top as gravity advances them downward.
+
+That means the renderer must support partial visibility:
+
+- for each local bitmap row
+- compute the corresponding screen row
+- if the row is above the visible field, skip drawing it
+- if the row is inside the visible field, draw it
+
+Collision logic must make the same distinction:
+
+- occupied cells above the visible top edge are allowed for the active falling piece
+- occupied cells below the bottom edge are not allowed
+- occupied cells overlapping landed board cells in visible space are not allowed
+
+Spawn logic should therefore allow a piece to exist partially off-screen above the top. A top-out condition happens only when a newly spawned piece cannot legally enter because its visible occupied cells already collide with landed board state.
+
+## Landed board storage
+
+The first landed-board implementation may use monochrome occupancy only, but the intended game model should preserve piece colour after locking.
+
+The preferred landed-board representation is separate RGB bitplanes, not packed per-cell colours.
+
+Recommended shape:
+
+- `board_red[8]`
+- `board_green[8]`
+- `board_blue[8]`
+
+Optionally:
+
+- `board_occupied[8]`
+
+or derive occupancy from the union of the colour planes.
+
+When a piece locks:
+
+- load the piece's monochrome row mask
+- apply its horizontal placement
+- OR that row mask into each landed colour plane selected by the piece's 3-bit RGB colour mask
+
+This keeps shape geometry independent from colour and matches the scan-native framebuffer model directly.
 
 That becomes two time domains:
 
@@ -328,6 +430,17 @@ For a first falling-block game, colour can stay simple:
 - landed blocks keep their piece colour
 - the original orange `L` reference colour is not available on 3-bit RGB hardware, so use white as the current substitute
 
+Store shape bitmaps as monochrome occupancy masks, not as coloured bitmaps.
+
+Colour should be separate piece metadata and should be applied at render time by selecting which RGB planes receive the row mask.
+
+That means:
+
+- the bitmap answers only: which cells are occupied
+- the colour value answers: which of red/green/blue should be written
+
+This keeps geometry and colour independent and avoids duplicating bitmap data for each colour.
+
 ## Colour model
 
 The hardware supports 3-bit colour:
@@ -358,6 +471,13 @@ or:
 - separate landed colour bitplanes directly
 
 For the smallest and fastest renderer on this machine, separate bitplanes are likely better once the game graduates from the single-pixel demo.
+
+Recommended active-piece colour model:
+
+- piece type owns a 3-bit RGB mask
+- renderer loads monochrome row bits
+- renderer shifts the row bits according to `x`
+- renderer ORs that mask into the enabled colour planes only
 
 ## Input model
 

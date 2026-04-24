@@ -5,7 +5,8 @@
 ; Goal:
 ;   Prove the scanline-tick architecture with the smallest visible program:
 ;   a 4x4 bitmap shape moved left/right and down by frame-driven gravity while
-;   the display is scanned one row at a time.
+;   the display is scanned one row at a time, freezing into a landed board on
+;   collision and respawning a new active piece.
 ;
 ; Controls (MON-3 key codes):
 ;   left  (0x10) = move left
@@ -32,8 +33,12 @@
 ;       byte 1 = green plane
 ;       byte 2 = blue plane
 ;       byte 3 = aux plane (reserved, not currently scanned)
-;   - The rendered object is a 4x4 bitmap blitted in white.
+;   - A monochrome landed board is rendered first.
+;   - The active object is a 4x4 bitmap blitted in white over the board.
 ;   - Current test shape: T piece, rotation 0.
+;   - Code and constant tables live together above an explicit RAM block.
+;     Mutable state and framebuffers are laid out from RAM_START and are
+;     initialized by INIT_STATE rather than relying on embedded ROM values.
 
         ORG     0x4000
 
@@ -70,11 +75,6 @@ MAIN_LOOP:
         JR      MAIN_LOOP
 
 INIT_STATE:
-        LD      A,3
-        LD      (PLAYER_X),A
-        LD      A,0
-        LD      (PLAYER_Y),A
-
         LD      A,MOVE_PERIOD
         LD      (MOVE_COOLDOWN),A
         LD      A,GRAVITY_PERIOD
@@ -91,6 +91,8 @@ INIT_STATE:
         LD      HL,FRAMEBUFFER
         LD      (SCAN_PTR),HL
 
+        CALL    CLEAR_BOARD
+        CALL    SPAWN_ACTIVE_PIECE
         JP      REBUILD_FRAMEBUFFER
 
 ; Output one scanline, then advance persistent scan state.
@@ -271,6 +273,10 @@ MOVE_RIGHT:
         CP      X_MAX
         RET     Z
         INC     A
+        LD      (PENDING_POS),A
+        CALL    CHECK_COLLISION_AT_CURRENT_Y
+        RET     C
+        LD      A,(PENDING_POS)
         LD      (PLAYER_X),A
         RET
 
@@ -279,6 +285,10 @@ MOVE_LEFT:
         OR      A
         RET     Z
         DEC     A
+        LD      (PENDING_POS),A
+        CALL    CHECK_COLLISION_AT_CURRENT_Y
+        RET     C
+        LD      A,(PENDING_POS)
         LD      (PLAYER_X),A
         RET
 
@@ -292,15 +302,23 @@ APPLY_GRAVITY:
         LD      (GRAVITY_COOLDOWN),A
 
         LD      A,(PLAYER_Y)
-        CP      Y_MAX
-        RET     Z
         INC     A
+        LD      (PENDING_POS),A
+        CALL    CHECK_COLLISION_AT_CURRENT_X
+        JR      C,LOCK_ACTIVE_PIECE
+        LD      A,(PENDING_POS)
         LD      (PLAYER_Y),A
+        RET
+
+LOCK_ACTIVE_PIECE:
+        CALL    MERGE_ACTIVE_TO_BOARD
+        CALL    SPAWN_ACTIVE_PIECE
         RET
 
 ; Full rebuild (used at init). Build in back buffer, then copy to live FB.
 REBUILD_FRAMEBUFFER:
         CALL    CLEAR_BACK_ALL
+        CALL    RENDER_BOARD_TO_BACK
         CALL    RENDER_ACTIVE_TO_BACK
         JP      COPY_BACK_TO_FRONT
 
@@ -339,6 +357,52 @@ COPY_BACK_TO_FRONT:
         LDIR
         RET
 
+CLEAR_BOARD:
+        LD      HL,BOARD_ROWS
+        LD      B,ROW_COUNT
+        XOR     A
+CLEAR_BOARD_LOOP:
+        LD      (HL),A
+        INC     HL
+        DJNZ    CLEAR_BOARD_LOOP
+        RET
+
+SPAWN_ACTIVE_PIECE:
+        LD      A,3
+        LD      (PLAYER_X),A
+        XOR     A
+        LD      (PLAYER_Y),A
+        LD      A,MOVE_PERIOD
+        LD      (MOVE_COOLDOWN),A
+        LD      A,GRAVITY_PERIOD
+        LD      (GRAVITY_COOLDOWN),A
+        XOR     A
+        LD      (LAST_KEY),A
+        LD      A,3
+        CALL    CHECK_COLLISION_AT_CURRENT_Y
+        RET     NC
+        CALL    CLEAR_BOARD
+        LD      A,3
+        LD      (PLAYER_X),A
+        XOR     A
+        LD      (PLAYER_Y),A
+        RET
+
+RENDER_BOARD_TO_BACK:
+        LD      HL,BOARD_ROWS
+        LD      DE,FRAMEBUFFER_BACK
+        LD      B,ROW_COUNT
+RENDER_BOARD_ROW:
+        LD      A,(HL)
+        LD      C,A
+        EX      DE,HL
+        CALL    WRITE_WHITE_ROW_MASK
+        INC     HL
+        EX      DE,HL
+        INC     HL
+        DJNZ    RENDER_BOARD_ROW
+        RET
+
 ; Draw the active 4x4 bitmap into the back buffer (same layout as live FB).
 RENDER_ACTIVE_TO_BACK:
         LD      A,(PLAYER_Y)
@@ -371,6 +435,84 @@ RENDER_SHAPE_ROW:
         DJNZ    RENDER_SHAPE_ROW
         RET
 
+CHECK_COLLISION_AT_CURRENT_Y:
+        LD      D,A
+        LD      A,(PLAYER_Y)
+        JR      CHECK_COLLISION_COMMON
+
+CHECK_COLLISION_AT_CURRENT_X:
+        LD      D,A
+        LD      A,(PLAYER_X)
+
+CHECK_COLLISION_COMMON:
+        LD      E,A
+        LD      A,D
+        CP      X_MIN
+        JR      C,COLLISION_TRUE
+        CP      X_MAX+1
+        JR      NC,COLLISION_TRUE
+        LD      A,E
+        CP      Y_MAX+1
+        JR      NC,COLLISION_TRUE
+
+        PUSH    DE
+        LD      A,D
+        ADD     A,A
+        ADD     A,A
+        LD      E,A
+        LD      D,0
+        LD      HL,PIECE_T0_ROWS
+        ADD     HL,DE
+        EX      DE,HL
+
+        POP     HL
+        LD      BC,BOARD_ROWS
+        ADD     HL,BC
+        LD      B,4
+
+CHECK_COLLISION_ROW:
+        LD      A,(DE)
+        LD      C,A
+        LD      A,(HL)
+        AND     C
+        JR      NZ,COLLISION_TRUE
+        INC     DE
+        INC     HL
+        DJNZ    CHECK_COLLISION_ROW
+        OR      A
+        RET
+COLLISION_TRUE:
+        SCF
+        RET
+
+MERGE_ACTIVE_TO_BOARD:
+        LD      A,(PLAYER_X)
+        ADD     A,A
+        ADD     A,A
+        LD      E,A
+        LD      D,0
+        LD      HL,PIECE_T0_ROWS
+        ADD     HL,DE
+        EX      DE,HL
+
+        LD      A,(PLAYER_Y)
+        LD      L,A
+        LD      H,0
+        LD      BC,BOARD_ROWS
+        ADD     HL,BC
+        LD      B,4
+
+MERGE_BOARD_ROW:
+        LD      A,(DE)
+        LD      C,A
+        LD      A,(HL)
+        OR      C
+        LD      (HL),A
+        INC     DE
+        INC     HL
+        DJNZ    MERGE_BOARD_ROW
+        RET
+
 ; OR mask C into red, green, and blue of the row (HL = row R on entry).
 ; On exit, HL = this row's blue (aux byte 3 not used by scan, not written).
 WRITE_WHITE_ROW_MASK:
@@ -389,59 +531,57 @@ WRITE_WHITE_ROW_MASK:
         LD      (HL),A
         RET
 
-PLAYER_X:
-        DB      0
-
-PLAYER_Y:
-        DB      0
-
-MOVE_COOLDOWN:
-        DB      0
-
-GRAVITY_COOLDOWN:
-        DB      0
-
-LAST_KEY:
-        DB      0
-
-FRAME_PHASE:
-        DB      0
-
-LOGIC_SLICE:
-        DB      0
-
-SCAN_MASK:
-        DB      0
-
-SCAN_PTR:
-        DW      0
-
-FRAMEBUFFER:
-        DB      0,0,0,0
-        DB      0,0,0,0
-        DB      0,0,0,0
-        DB      0,0,0,0
-        DB      0,0,0,0
-        DB      0,0,0,0
-        DB      0,0,0,0
-        DB      0,0,0,0
-
-; Off-screen compose buffer; visible FB is updated atomically from here in slice 7.
-FRAMEBUFFER_BACK:
-        DB      0,0,0,0
-        DB      0,0,0,0
-        DB      0,0,0,0
-        DB      0,0,0,0
-        DB      0,0,0,0
-        DB      0,0,0,0
-        DB      0,0,0,0
-        DB      0,0,0,0
-
 ; Current test bitmap: T piece, rotation 0, pre-shifted for x = 0..4.
 ; Each 4-byte group is the 4 local rows for one horizontal position.
 PIECE_T0_ROWS:
-        DB      %11100000, %01000000, %00000000, %00000000
-        DB      %01110000, %00100000, %00000000, %00000000
-        DB      %00111000, %00010000, %00000000, %00000000
-        DB      %00011100, %00001000, %00000000, %00000000
-        DB      %00001110, %00000100, %00000000, %00000000
+        DB      %00000000, %00000000, %11100000, %01000000
+        DB      %00000000, %00000000, %01110000, %00100000
+        DB      %00000000, %00000000, %00111000, %00010000
+        DB      %00000000, %00000000, %00011100, %00001000
+        DB      %00000000, %00000000, %00001110, %00000100
+
+; RAM layout.
+; These bytes are mutable program state. INIT_STATE sets explicit defaults
+; and clears the buffers that need a known startup value.
+RAM_START:
+PLAYER_X:
+        DS      1
+
+PLAYER_Y:
+        DS      1
+
+MOVE_COOLDOWN:
+        DS      1
+
+GRAVITY_COOLDOWN:
+        DS      1
+
+LAST_KEY:
+        DS      1
+
+PENDING_POS:
+        DS      1
+
+FRAME_PHASE:
+        DS      1
+
+LOGIC_SLICE:
+        DS      1
+
+SCAN_MASK:
+        DS      1
+
+SCAN_PTR:
+        DS      2
+
+BOARD_ROWS:
+        DS      ROW_COUNT
+
+FRAMEBUFFER:
+        DS      FRAMEBUFFER_BYTES
+
+; Off-screen compose buffer; visible FB is updated atomically from here in slice 7.
+FRAMEBUFFER_BACK:
+        DS      FRAMEBUFFER_BYTES
+
+RAM_END:
