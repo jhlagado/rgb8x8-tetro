@@ -63,11 +63,10 @@ MOVE_PERIOD:    EQU     16
 ; Decremented once per full 8-slice pass (in slice 1). Larger = slower fall.
 GRAVITY_PERIOD: EQU     128
 X_MIN:          EQU     0
-X_MAX:          EQU     5
 Y_MIN:          EQU     0
 Y_MAX:          EQU     4
 SPAWN_Y:        EQU     0xFD
-PIECE_T0_BOTTOM: EQU    3
+PIECE_COUNT:    EQU     7
 SCAN_MASK_START: EQU    0x01
 
 START:
@@ -96,6 +95,7 @@ INIT_STATE:
         LD      (DIAG_LATCH),A
         LD      (FRAME_PHASE),A
         LD      (LOGIC_SLICE),A
+        LD      (NEXT_PIECE_INDEX),A
 
         LD      A,SCAN_MASK_START
         LD      (SCAN_MASK),A
@@ -326,8 +326,12 @@ SAME_DIRECTION:
 ;   A, D, E
 MOVE_RIGHT:
         LD      A,(PLAYER_X)
-        CP      X_MAX
+        LD      C,A
+        LD      A,(CURRENT_PIECE_RIGHT)
+        ADD     A,C
+        CP      ROW_COUNT-1
         RET     Z
+        LD      A,C
         INC     A
         LD      (PENDING_X),A
         LD      A,(PLAYER_Y)
@@ -425,9 +429,12 @@ LOCK_ACTIVE_PIECE:
 ;   A
 SANITIZE_ACTIVE_POSITION:
         LD      A,(PLAYER_X)
-        CP      X_MAX+1
+        LD      HL,CURRENT_PIECE_RIGHT
+        ADD     A,(HL)
+        CP      ROW_COUNT
         JR      C,SANITIZE_X_DONE
-        LD      A,X_MAX
+        LD      A,ROW_COUNT-1
+        SUB     (HL)
         LD      (PLAYER_X),A
 SANITIZE_X_DONE:
         LD      A,(PLAYER_Y)
@@ -529,6 +536,49 @@ CLEAR_BOARD_LOOP:
         LD      (BOARD_EMPTY),A
         RET
 
+; SELECT_NEXT_PIECE
+; Input:
+;   NEXT_PIECE_INDEX in RAM
+; Output:
+;   CURRENT_PIECE_PTR / CURRENT_PIECE_BOTTOM / CURRENT_PIECE_RIGHT updated
+;   NEXT_PIECE_INDEX advanced modulo PIECE_COUNT
+; Clobbers:
+;   A, BC, DE, HL
+SELECT_NEXT_PIECE:
+        LD      A,(NEXT_PIECE_INDEX)
+        LD      E,A
+        LD      D,0
+
+        LD      HL,PIECE_BOTTOM_TABLE
+        ADD     HL,DE
+        LD      A,(HL)
+        LD      (CURRENT_PIECE_BOTTOM),A
+
+        LD      HL,PIECE_RIGHT_TABLE
+        ADD     HL,DE
+        LD      A,(HL)
+        LD      (CURRENT_PIECE_RIGHT),A
+
+        LD      HL,PIECE_PTR_TABLE
+        ADD     HL,DE
+        ADD     HL,DE
+        LD      E,(HL)
+        INC     HL
+        LD      D,(HL)
+        LD      HL,CURRENT_PIECE_PTR
+        LD      (HL),E
+        INC     HL
+        LD      (HL),D
+
+        LD      A,(NEXT_PIECE_INDEX)
+        INC     A
+        CP      PIECE_COUNT
+        JR      C,SELECT_NEXT_PIECE_SAVE
+        XOR     A
+SELECT_NEXT_PIECE_SAVE:
+        LD      (NEXT_PIECE_INDEX),A
+        RET
+
 ; SPAWN_ACTIVE_PIECE
 ; Input:
 ;   none
@@ -538,6 +588,7 @@ CLEAR_BOARD_LOOP:
 ; Clobbers:
 ;   A, D, E
 SPAWN_ACTIVE_PIECE:
+        CALL    SELECT_NEXT_PIECE
         LD      A,3
         LD      (PLAYER_X),A
         LD      A,SPAWN_Y
@@ -602,7 +653,7 @@ RENDER_BOARD_TO_BACK_EXIT:
 ; Draw the active 4x4 bitmap into the back buffer (same layout as live FB).
 ; RENDER_ACTIVE_TO_BACK
 ; Input:
-;   PLAYER_X, PLAYER_Y, PIECE_T0
+;   PLAYER_X, PLAYER_Y, CURRENT_PIECE_PTR
 ; Output:
 ;   active piece ORed into FRAMEBUFFER_BACK in white
 ; Clobbers:
@@ -616,7 +667,7 @@ RENDER_ACTIVE_TO_BACK:
         LD      A,(PLAYER_Y)
         LD      L,A
         LD      H,0
-        LD      DE,PIECE_T0
+        LD      DE,(CURRENT_PIECE_PTR)
         LD      B,4
 
 RENDER_SHAPE_ROW:
@@ -668,14 +719,18 @@ CHECK_COLLISION_AT_DE:
         LD      A,D
         CP      X_MIN
         JR      C,COLLISION_TRUE_XBOUND
-        CP      X_MAX+1
+        LD      C,A
+        LD      A,(CURRENT_PIECE_RIGHT)
+        ADD     A,C
+        CP      ROW_COUNT
         JR      NC,COLLISION_TRUE_XBOUND
+        LD      A,D
         LD      (SHIFT_COUNT),A
         LD      A,E
         LD      L,A
         LD      H,0
         LD      B,4
-        LD      DE,PIECE_T0
+        LD      DE,(CURRENT_PIECE_PTR)
         LD      A,(BOARD_EMPTY)
         OR      A
         JR      Z,CHECK_COLLISION_ROW
@@ -703,7 +758,7 @@ CHECK_COLLISION_ROW:
         LD      (TRACE_OVERLAP_MASK),A
         LD      A,L
         LD      (TRACE_OVERLAP_ROW),A
-        LD      A,D
+        LD      A,(SHIFT_COUNT)
         LD      (TRACE_OVERLAP_X),A
         LD      A,(PENDING_Y)
         LD      (TRACE_OVERLAP_Y),A
@@ -721,7 +776,9 @@ COLLISION_NEXT_ROW:
 
 CHECK_COLLISION_EMPTY_BOARD_SIMPLE:
         LD      A,L
-        ADD     A,PIECE_T0_BOTTOM
+        LD      C,A
+        LD      A,(CURRENT_PIECE_BOTTOM)
+        ADD     A,C
         CP      ROW_COUNT
         JR      NC,COLLISION_TRUE_ROW_BOTTOM
         OR      A
@@ -745,7 +802,7 @@ COLLISION_EXIT_OK:
 
 ; MERGE_ACTIVE_TO_BOARD
 ; Input:
-;   PLAYER_X, PLAYER_Y, PIECE_T0
+;   PLAYER_X, PLAYER_Y, CURRENT_PIECE_PTR
 ; Output:
 ;   active piece ORed into BOARD_ROWS
 ; Clobbers:
@@ -761,7 +818,7 @@ MERGE_ACTIVE_TO_BOARD:
         LD      A,(PLAYER_Y)
         LD      L,A
         LD      H,0
-        LD      DE,PIECE_T0
+        LD      DE,(CURRENT_PIECE_PTR)
         LD      B,4
 
 MERGE_BOARD_ROW:
@@ -907,14 +964,77 @@ DIAG_SEG_TABLE:
         DB      0xC7
         DB      0x47
 
-; Current test bitmap: T piece, rotation 0.
-; Stored once, bottom-aligned in the 4x4 box. Horizontal placement is applied
-; at runtime by shifting each row mask right by PLAYER_X / candidate x.
-PIECE_T0:
+; Default piece set, rotation 0 only for now.
+; Each piece is stored once, bottom-aligned in the 4x4 box.
+; Horizontal placement is applied at runtime by shifting each row mask right.
+PIECE_I3_R0:
+        DB      %00000000
+        DB      %00000000
+        DB      %00000000
+        DB      %11100000
+
+PIECE_O_R0:
+        DB      %00000000
+        DB      %00000000
+        DB      %11000000
+        DB      %11000000
+
+PIECE_T_R0:
         DB      %00000000
         DB      %00000000
         DB      %11100000
         DB      %01000000
+
+PIECE_S_R0:
+        DB      %00000000
+        DB      %00000000
+        DB      %01100000
+        DB      %11000000
+
+PIECE_Z_R0:
+        DB      %00000000
+        DB      %00000000
+        DB      %11000000
+        DB      %01100000
+
+PIECE_J_R0:
+        DB      %00000000
+        DB      %00000000
+        DB      %10000000
+        DB      %11100000
+
+PIECE_L_R0:
+        DB      %00000000
+        DB      %00000000
+        DB      %00100000
+        DB      %11100000
+
+PIECE_PTR_TABLE:
+        DW      PIECE_I3_R0
+        DW      PIECE_O_R0
+        DW      PIECE_T_R0
+        DW      PIECE_S_R0
+        DW      PIECE_Z_R0
+        DW      PIECE_J_R0
+        DW      PIECE_L_R0
+
+PIECE_BOTTOM_TABLE:
+        DB      3
+        DB      3
+        DB      3
+        DB      3
+        DB      3
+        DB      3
+        DB      3
+
+PIECE_RIGHT_TABLE:
+        DB      2
+        DB      1
+        DB      2
+        DB      2
+        DB      2
+        DB      2
+        DB      2
 
 ; RAM layout.
 ; These bytes are mutable program state. INIT_STATE sets explicit defaults
@@ -945,6 +1065,18 @@ PENDING_Y:
         DS      1
 
 SHIFT_COUNT:
+        DS      1
+
+CURRENT_PIECE_PTR:
+        DS      2
+
+CURRENT_PIECE_BOTTOM:
+        DS      1
+
+CURRENT_PIECE_RIGHT:
+        DS      1
+
+NEXT_PIECE_INDEX:
         DS      1
 
 DIAG_CODE:

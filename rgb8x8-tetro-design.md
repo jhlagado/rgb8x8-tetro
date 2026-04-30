@@ -108,15 +108,15 @@ That matches the scan-native framebuffer model directly.
 
 ## Active piece representation
 
-The Arduino `Tetromino` struct is conceptually good, and its piece set / rotation geometry should be treated as the current design reference:
+The Arduino `Tetromino` struct is conceptually good, but for this 8x8 game the full classic set is too large in one important case. The engine should stay general, while the default gameplay set should be compacted for the very small board.
 
-- 7 piece types
+- engine supports 7 piece types
 - 4 rotations
 - 4 cells per rotation
 
-The intended piece set is:
+The default gameplay piece set is:
 
-- `I`
+- `I3`
 - `O`
 - `T`
 - `S`
@@ -124,14 +124,16 @@ The intended piece set is:
 - `J`
 - `L`
 
-The intended rotation geometry is:
+The classic 4-cell `I` bar is explicitly deferred for now. If it returns later, it should be treated as a ruleset/config variant rather than the default baseline.
+
+The intended default rotation geometry is:
 
 ```text
-I:
-  rot0: (0,0) (1,0) (2,0) (3,0)
-  rot1: (0,0) (0,1) (0,2) (0,3)
-  rot2: (0,0) (1,0) (2,0) (3,0)
-  rot3: (0,0) (0,1) (0,2) (0,3)
+I3:
+  rot0: (0,0) (1,0) (2,0)
+  rot1: (0,0) (0,1) (0,2)
+  rot2: (0,0) (1,0) (2,0)
+  rot3: (0,0) (0,1) (0,2)
 
 O:
   rot0..3: (0,0) (1,0) (0,1) (1,1)
@@ -173,8 +175,8 @@ Keep the logical piece footprint at `4x4`, not `3x3`.
 
 Reason:
 
-- six pieces can fit inside `3x3`
-- the `I` piece cannot
+- the default gameplay set is mostly `3x3`-scale, but a uniform `4x4` engine footprint still keeps rendering, collision, and rotation logic simple
+- it avoids redesigning the engine if the classic `I4` is reintroduced later as an optional variant
 - using `4x4` for every piece keeps rendering, collision, and rotation logic uniform
 
 Recommended shape:
@@ -329,6 +331,13 @@ This should be treated as another time-sliced display task, not as a blocking re
 
 It belongs naturally in the same main-loop scheduling model as the RGB matrix.
 
+More concretely:
+
+- the `8x8` scan remains the primary real-time display task
+- the `7`-segment scan should be interleaved into the same cooperative loop
+- a simple first approach is to advance one `7`-segment digit per matrix row tick
+- this keeps the scoreboard visually alive without introducing a second timing model
+
 ### Simple speaker output
 
 Simple sound effects can also fit the same model.
@@ -344,6 +353,7 @@ A practical first model is:
 - maintain a small sound state in RAM
 - on each loop pass, update a divider or countdown
 - when due, toggle the speaker control bit
+- treat sound generation as just another very small service slice synchronized with the same main loop that scans the matrix
 
 That keeps sound generation cooperative and bounded, just like the display scan tasks.
 
@@ -363,6 +373,55 @@ So the runtime should evolve toward:
 - optional speaker update task
 
 all sharing the same loop budget.
+
+## Piece source and PRNG
+
+The next gameplay step should first use a deterministic piece source.
+
+Reason:
+
+- deterministic piece order is easier to debug than random selection
+- geometry, collision, and rotation bugs are easier to reproduce with a known sequence
+- randomness should be introduced only after the piece-table path is stable
+
+Recommended progression:
+
+1. fixed cycle or scripted sequence for development
+2. add a small PRNG once multi-piece spawning is working
+3. keep explicit seed control so tests remain reproducible
+
+### PRNG shape
+
+Recommended first PRNG:
+
+- a very small `8`-bit LFSR or similar cheap byte-oriented generator
+- one dedicated RAM byte of PRNG state
+- one routine responsible for advancing and returning the next byte
+
+### Seed policy
+
+Recommended seed policy:
+
+- test mode: fixed seed
+- normal mode: runtime seed
+
+Runtime seeding should prefer user-driven entropy over relying only on the `R` register.
+
+Reason:
+
+- the `R` register is only `7` bits and is not a strong source by itself
+- user key timing is a better gameplay-facing entropy source
+- a practical solution is to start from a simple base value and stir in keypress timing / key values as they occur
+
+### Piece-count selection
+
+Avoid naive `% 7` selection as the first implementation.
+
+Preferred options:
+
+- use a deterministic fixed cycle first
+- or choose a power-of-two-friendly table size
+- or add an explicit remapping / rejection strategy later once the base generator is stable
 
 ## Landed board storage
 
