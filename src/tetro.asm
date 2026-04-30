@@ -11,6 +11,12 @@
 ; Controls (MON-3 key codes):
 ;   left  (0x10) = move left
 ;   right (0x11) = move right
+;   rotate (0x12) = clockwise rotate
+;   AD     (0x13) = counter-clockwise rotate
+;   3      (0x03) = clockwise rotate
+;   2      (0x02) = counter-clockwise rotate
+;   0      (0x00) = soft drop
+;   F      (0x0F) = pause
 ;
 ; Design:
 ;   - One scanline is output per main-loop iteration.
@@ -54,6 +60,12 @@ PORT_BLUE:      EQU     0xF9
 API_SCANKEYS:   EQU     16
 K_LEFT:         EQU     0x10
 K_RIGHT:        EQU     0x11
+K_ROTATE:       EQU     0x12
+K_ROTATE_CCW:   EQU     0x13
+K_ROTATE_ALT:   EQU     0x03
+K_ROTATE_CCW_ALT: EQU   0x02
+K_DROP:         EQU     0x00
+K_PAUSE:        EQU     0x0F
 
 ; Matrix / game constants
 ROW_COUNT:      EQU     8
@@ -64,7 +76,7 @@ MOVE_PERIOD:    EQU     16
 GRAVITY_PERIOD: EQU     128
 X_MIN:          EQU     0
 Y_MIN:          EQU     0
-Y_MAX:          EQU     4
+Y_MAX:          EQU     7
 SPAWN_Y:        EQU     0xFD
 PIECE_COUNT:    EQU     7
 SCAN_MASK_START: EQU    0x01
@@ -95,6 +107,9 @@ INIT_STATE:
         LD      (DIAG_LATCH),A
         LD      (FRAME_PHASE),A
         LD      (LOGIC_SLICE),A
+        LD      (PAUSED),A
+        LD      (CURRENT_ROTATION),A
+        LD      (CURRENT_PIECE_INDEX),A
         LD      (NEXT_PIECE_INDEX),A
 
         LD      A,SCAN_MASK_START
@@ -177,6 +192,12 @@ SAVE_NEXT_SCAN_PTR:
 ;   A, HL, and whatever the called slice routines clobber
 LOGIC_TICK:
         CALL    SANITIZE_ACTIVE_POSITION
+        LD      A,(PAUSED)
+        OR      A
+        JR      Z,LOGIC_TICK_ACTIVE
+        CALL    POLL_INPUT_AND_UPDATE
+        RET
+LOGIC_TICK_ACTIVE:
         LD      A,(LOGIC_SLICE)
         AND     7
         CP      0
@@ -264,11 +285,47 @@ POLL_INPUT_AND_UPDATE:
         LD      C,API_SCANKEYS
         RST     0x10
         JR      NZ,RESET_MOVE_RATE
+        LD      E,A
+        JR      C,KEY_NEW_PRESS
+        LD      A,E
+        CP      K_PAUSE
+        JP      Z,RESET_MOVE_RATE
+        LD      A,(PAUSED)
+        OR      A
+        JR      NZ,RESET_MOVE_RATE
+        LD      A,E
+        CP      K_ROTATE
+        JR      Z,RESET_MOVE_RATE
+        CP      K_ROTATE_CCW
+        JR      Z,RESET_MOVE_RATE
+        CP      K_ROTATE_ALT
+        JR      Z,RESET_MOVE_RATE
+        CP      K_ROTATE_CCW_ALT
+        JR      Z,RESET_MOVE_RATE
+        JR      HANDLE_DIRECTION_KEY
 
+KEY_NEW_PRESS:
+        LD      A,E
+        CP      K_PAUSE
+        JP      Z,HANDLE_PAUSE_KEY
+        CP      K_ROTATE
+        JP      Z,HANDLE_ROTATE_PRESS
+        CP      K_ROTATE_CCW
+        JP      Z,HANDLE_ROTATE_CCW_PRESS
+        CP      K_ROTATE_ALT
+        JP      Z,HANDLE_ROTATE_PRESS
+        CP      K_ROTATE_CCW_ALT
+        JP      Z,HANDLE_ROTATE_CCW_PRESS
+        ; fall through
+
+HANDLE_DIRECTION_KEY:
+        LD      A,E
         CP      K_LEFT
-        JR      Z,HANDLE_KEY_LEFT
+        JP      Z,HANDLE_KEY_LEFT
         CP      K_RIGHT
-        JR      Z,HANDLE_KEY_RIGHT
+        JP      Z,HANDLE_KEY_RIGHT
+        CP      K_DROP
+        JP      Z,HANDLE_KEY_DROP
 
 RESET_MOVE_RATE:
         LD      A,MOVE_PERIOD
@@ -276,6 +333,21 @@ RESET_MOVE_RATE:
         XOR     A
         LD      (LAST_KEY),A
         RET
+
+HANDLE_PAUSE_KEY:
+        JR      NC,RESET_MOVE_RATE
+        LD      A,(PAUSED)
+        XOR     1
+        LD      (PAUSED),A
+        JP      RESET_MOVE_RATE
+
+HANDLE_ROTATE_PRESS:
+        CALL    ROTATE_CW
+        JP      RESET_MOVE_RATE
+
+HANDLE_ROTATE_CCW_PRESS:
+        CALL    ROTATE_LEFT
+        JP      RESET_MOVE_RATE
 
 HANDLE_KEY_RIGHT:
         LD      A,K_RIGHT
@@ -289,9 +361,9 @@ HANDLE_KEY_LEFT:
 ;   A = direction key (K_LEFT or K_RIGHT)
 ; HANDLE_HELD_DIRECTION
 ; Input:
-;   A = direction key code
+;   A = movement/drop key code
 ; Output:
-;   may update PLAYER_X / MOVE_COOLDOWN / LAST_KEY
+;   may update PLAYER_X / PLAYER_Y / MOVE_COOLDOWN / LAST_KEY
 ; Clobbers:
 ;   A, D, E
 HANDLE_HELD_DIRECTION:
@@ -316,6 +388,8 @@ SAME_DIRECTION:
         LD      A,E
         CP      K_LEFT
         JR      Z,MOVE_LEFT
+        CP      K_DROP
+        JP      Z,SOFT_DROP
 
 ; MOVE_RIGHT
 ; Input:
@@ -379,6 +453,10 @@ MOVE_LEFT_COMMIT:
         LD      (PLAYER_X),A
         RET
 
+HANDLE_KEY_DROP:
+        LD      A,K_DROP
+        JP      HANDLE_HELD_DIRECTION
+
 ; APPLY_GRAVITY
 ; Input:
 ;   none
@@ -412,6 +490,35 @@ APPLY_GRAVITY:
 GRAVITY_COMMIT:
         LD      A,(PENDING_Y)
         LD      (PLAYER_Y),A
+        RET
+
+; SOFT_DROP
+; Input:
+;   none
+; Output:
+;   may update PLAYER_Y, or lock and respawn active piece on collision
+; Clobbers:
+;   A, D, E
+SOFT_DROP:
+        LD      A,(PLAYER_X)
+        LD      (PENDING_X),A
+        LD      A,(PLAYER_Y)
+        INC     A
+        LD      (PENDING_Y),A
+        LD      A,(PENDING_X)
+        LD      D,A
+        LD      A,(PENDING_Y)
+        LD      E,A
+        CALL    CHECK_COLLISION_AT_DE
+        JR      NC,SOFT_DROP_COMMIT
+        LD      A,1
+        CALL    DIAG_SET_FAULT
+        JR      LOCK_ACTIVE_PIECE
+SOFT_DROP_COMMIT:
+        LD      A,(PENDING_Y)
+        LD      (PLAYER_Y),A
+        LD      A,GRAVITY_PERIOD
+        LD      (GRAVITY_COOLDOWN),A
         RET
 
 LOCK_ACTIVE_PIECE:
@@ -540,12 +647,41 @@ CLEAR_BOARD_LOOP:
 ; Input:
 ;   NEXT_PIECE_INDEX in RAM
 ; Output:
+;   CURRENT_PIECE_INDEX / CURRENT_ROTATION updated
 ;   CURRENT_PIECE_PTR / CURRENT_PIECE_BOTTOM / CURRENT_PIECE_RIGHT updated
 ;   NEXT_PIECE_INDEX advanced modulo PIECE_COUNT
 ; Clobbers:
 ;   A, BC, DE, HL
 SELECT_NEXT_PIECE:
         LD      A,(NEXT_PIECE_INDEX)
+        LD      (CURRENT_PIECE_INDEX),A
+        XOR     A
+        LD      (CURRENT_ROTATION),A
+        CALL    LOAD_CURRENT_ROTATION_STATE
+
+        LD      A,(NEXT_PIECE_INDEX)
+        INC     A
+        CP      PIECE_COUNT
+        JR      C,SELECT_NEXT_PIECE_SAVE
+        XOR     A
+SELECT_NEXT_PIECE_SAVE:
+        LD      (NEXT_PIECE_INDEX),A
+        RET
+
+; LOAD_CURRENT_ROTATION_STATE
+; Input:
+;   CURRENT_PIECE_INDEX / CURRENT_ROTATION in RAM
+; Output:
+;   CURRENT_PIECE_PTR / CURRENT_PIECE_BOTTOM / CURRENT_PIECE_RIGHT updated
+; Clobbers:
+;   A, BC, DE, HL
+LOAD_CURRENT_ROTATION_STATE:
+        LD      A,(CURRENT_PIECE_INDEX)
+        ADD     A,A
+        ADD     A,A
+        LD      C,A
+        LD      A,(CURRENT_ROTATION)
+        ADD     A,C
         LD      E,A
         LD      D,0
 
@@ -569,15 +705,62 @@ SELECT_NEXT_PIECE:
         LD      (HL),E
         INC     HL
         LD      (HL),D
-
-        LD      A,(NEXT_PIECE_INDEX)
-        INC     A
-        CP      PIECE_COUNT
-        JR      C,SELECT_NEXT_PIECE_SAVE
-        XOR     A
-SELECT_NEXT_PIECE_SAVE:
-        LD      (NEXT_PIECE_INDEX),A
         RET
+
+; ROTATE_CW
+; Input:
+;   current active piece state in RAM
+; Output:
+;   may update CURRENT_ROTATION if rotated placement is legal
+; Clobbers:
+;   A, D, E
+ROTATE_CW:
+        LD      A,(CURRENT_ROTATION)
+        LD      (PENDING_ROTATION),A
+        INC     A
+        AND     3
+        LD      (CURRENT_ROTATION),A
+        CALL    LOAD_CURRENT_ROTATION_STATE
+
+        LD      A,(PLAYER_X)
+        LD      D,A
+        LD      A,(PLAYER_Y)
+        LD      E,A
+        CALL    CHECK_COLLISION_AT_DE
+        RET     NC
+
+        LD      A,(PENDING_ROTATION)
+        LD      (CURRENT_ROTATION),A
+        JP      LOAD_CURRENT_ROTATION_STATE
+
+; ROTATE_LEFT
+; Input:
+;   current active piece state in RAM
+; Output:
+;   may update CURRENT_ROTATION if rotated placement is legal
+; Clobbers:
+;   A, D, E
+ROTATE_LEFT:
+        LD      A,(CURRENT_ROTATION)
+        LD      (PENDING_ROTATION),A
+        OR      A
+        JR      NZ,ROTATE_LEFT_DEC
+        LD      A,4
+ROTATE_LEFT_DEC:
+        DEC     A
+        LD      (CURRENT_ROTATION),A
+        CALL    LOAD_CURRENT_ROTATION_STATE
+
+        LD      A,(PLAYER_X)
+        LD      D,A
+        LD      A,(PLAYER_Y)
+        LD      E,A
+        CALL    CHECK_COLLISION_AT_DE
+        RET     NC
+
+        LD      A,(PENDING_ROTATION)
+        LD      (CURRENT_ROTATION),A
+        JP      LOAD_CURRENT_ROTATION_STATE
 
 ; SPAWN_ACTIVE_PIECE
 ; Input:
@@ -964,77 +1147,182 @@ DIAG_SEG_TABLE:
         DB      0xC7
         DB      0x47
 
-; Default piece set, rotation 0 only for now.
-; Each piece is stored once, bottom-aligned in the 4x4 box.
-; Horizontal placement is applied at runtime by shifting each row mask right.
+; Default 3x3-scale piece set with precomputed clockwise rotations.
+; Shapes are centered in a 3x3 local frame where practical; the engine still
+; stores them as 4 row bytes and shifts them horizontally at runtime.
 PIECE_I3_R0:
         DB      %00000000
+        DB      %11100000
         DB      %00000000
+        DB      %00000000
+PIECE_I3_R1:
+        DB      %01000000
+        DB      %01000000
+        DB      %01000000
+        DB      %00000000
+PIECE_I3_R2:
         DB      %00000000
         DB      %11100000
+        DB      %00000000
+        DB      %00000000
+PIECE_I3_R3:
+        DB      %01000000
+        DB      %01000000
+        DB      %01000000
+        DB      %00000000
 
 PIECE_O_R0:
-        DB      %00000000
-        DB      %00000000
         DB      %11000000
         DB      %11000000
+        DB      %00000000
+        DB      %00000000
+PIECE_O_R1:
+        DB      %11000000
+        DB      %11000000
+        DB      %00000000
+        DB      %00000000
+PIECE_O_R2:
+        DB      %11000000
+        DB      %11000000
+        DB      %00000000
+        DB      %00000000
+PIECE_O_R3:
+        DB      %11000000
+        DB      %11000000
+        DB      %00000000
+        DB      %00000000
 
 PIECE_T_R0:
-        DB      %00000000
-        DB      %00000000
         DB      %11100000
         DB      %01000000
+        DB      %00000000
+        DB      %00000000
+PIECE_T_R1:
+        DB      %01000000
+        DB      %01100000
+        DB      %01000000
+        DB      %00000000
+PIECE_T_R2:
+        DB      %00000000
+        DB      %01000000
+        DB      %11100000
+        DB      %00000000
+PIECE_T_R3:
+        DB      %01000000
+        DB      %11000000
+        DB      %01000000
+        DB      %00000000
 
 PIECE_S_R0:
+        DB      %01100000
+        DB      %11000000
         DB      %00000000
+        DB      %00000000
+PIECE_S_R1:
+        DB      %01000000
+        DB      %01100000
+        DB      %00100000
+        DB      %00000000
+PIECE_S_R2:
         DB      %00000000
         DB      %01100000
         DB      %11000000
+        DB      %00000000
+PIECE_S_R3:
+        DB      %10000000
+        DB      %11000000
+        DB      %01000000
+        DB      %00000000
 
 PIECE_Z_R0:
+        DB      %11000000
+        DB      %01100000
         DB      %00000000
+        DB      %00000000
+PIECE_Z_R1:
+        DB      %00100000
+        DB      %01100000
+        DB      %01000000
+        DB      %00000000
+PIECE_Z_R2:
         DB      %00000000
         DB      %11000000
         DB      %01100000
+        DB      %00000000
+PIECE_Z_R3:
+        DB      %01000000
+        DB      %11000000
+        DB      %10000000
+        DB      %00000000
 
 PIECE_J_R0:
-        DB      %00000000
-        DB      %00000000
         DB      %10000000
         DB      %11100000
+        DB      %00000000
+        DB      %00000000
+PIECE_J_R1:
+        DB      %01100000
+        DB      %01000000
+        DB      %01000000
+        DB      %00000000
+PIECE_J_R2:
+        DB      %00000000
+        DB      %11100000
+        DB      %00100000
+        DB      %00000000
+PIECE_J_R3:
+        DB      %01000000
+        DB      %01000000
+        DB      %11000000
+        DB      %00000000
 
 PIECE_L_R0:
-        DB      %00000000
-        DB      %00000000
         DB      %00100000
         DB      %11100000
+        DB      %00000000
+        DB      %00000000
+PIECE_L_R1:
+        DB      %01000000
+        DB      %01000000
+        DB      %01100000
+        DB      %00000000
+PIECE_L_R2:
+        DB      %00000000
+        DB      %11100000
+        DB      %10000000
+        DB      %00000000
+PIECE_L_R3:
+        DB      %11000000
+        DB      %01000000
+        DB      %01000000
+        DB      %00000000
 
 PIECE_PTR_TABLE:
-        DW      PIECE_I3_R0
-        DW      PIECE_O_R0
-        DW      PIECE_T_R0
-        DW      PIECE_S_R0
-        DW      PIECE_Z_R0
-        DW      PIECE_J_R0
-        DW      PIECE_L_R0
+        DW      PIECE_I3_R0, PIECE_I3_R1, PIECE_I3_R2, PIECE_I3_R3
+        DW      PIECE_O_R0, PIECE_O_R1, PIECE_O_R2, PIECE_O_R3
+        DW      PIECE_T_R0, PIECE_T_R1, PIECE_T_R2, PIECE_T_R3
+        DW      PIECE_S_R0, PIECE_S_R1, PIECE_S_R2, PIECE_S_R3
+        DW      PIECE_Z_R0, PIECE_Z_R1, PIECE_Z_R2, PIECE_Z_R3
+        DW      PIECE_J_R0, PIECE_J_R1, PIECE_J_R2, PIECE_J_R3
+        DW      PIECE_L_R0, PIECE_L_R1, PIECE_L_R2, PIECE_L_R3
 
 PIECE_BOTTOM_TABLE:
-        DB      3
-        DB      3
-        DB      3
-        DB      3
-        DB      3
-        DB      3
-        DB      3
+        DB      1,2,1,2
+        DB      1,1,1,1
+        DB      1,2,2,2
+        DB      1,2,2,2
+        DB      1,2,2,2
+        DB      1,2,2,2
+        DB      1,2,2,2
 
 PIECE_RIGHT_TABLE:
-        DB      2
-        DB      1
-        DB      2
-        DB      2
-        DB      2
-        DB      2
-        DB      2
+        DB      2,1,2,1
+        DB      1,1,1,1
+        DB      2,2,2,1
+        DB      2,2,2,1
+        DB      2,2,2,1
+        DB      2,2,2,1
+        DB      2,2,2,1
 
 ; RAM layout.
 ; These bytes are mutable program state. INIT_STATE sets explicit defaults
@@ -1070,6 +1358,12 @@ SHIFT_COUNT:
 CURRENT_PIECE_PTR:
         DS      2
 
+CURRENT_PIECE_INDEX:
+        DS      1
+
+CURRENT_ROTATION:
+        DS      1
+
 CURRENT_PIECE_BOTTOM:
         DS      1
 
@@ -1077,6 +1371,12 @@ CURRENT_PIECE_RIGHT:
         DS      1
 
 NEXT_PIECE_INDEX:
+        DS      1
+
+PENDING_ROTATION:
+        DS      1
+
+PAUSED:
         DS      1
 
 DIAG_CODE:

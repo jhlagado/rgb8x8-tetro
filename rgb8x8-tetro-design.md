@@ -211,32 +211,31 @@ Reason:
 
 Horizontal placement is a different concern and should be applied at render time by shifting the row mask in registers. Do not store a separate copy of each rotation for every horizontal position.
 
-Each stored rotation should be normalized inside its `4x4` box:
-
-- left-aligned
-- bottom-aligned
+For the default `3x3`-scale piece family, rotations should now be thought of as centered around the local `3x3` pivot at `(1,1)`.
 
 That means:
 
-- the leftmost occupied cell should be in local column 0
-- the lowest occupied cell should be in local row 3
+- the meaningful gameplay geometry is a centered `3x3` local frame
+- each default rotation is precomputed from that centered local model
+- the engine may still store the result in a uniform `4x4` row format
 
-This keeps floor checks, landed-board checks, and rendering simpler because there is no dead space below or to the left of the occupied bitmap.
+This is better than bottom-left packing once rotation becomes a real gameplay feature because:
 
-The practical rotation origin is therefore virtual. The game does not rotate a shape around a computed geometric center. It selects a different precomputed, bottom-left-normalized bitmap for the same logical `x,y` and then validates that placement.
+- the local pivot stays conceptually stable across rotations
+- rotations do not have to be interpreted as different packed offsets of the same shape
+- the precomputed bitmaps read more naturally as rotated versions of the same local form
 
-Horizontal storage should also stay left-aligned rather than centered. The useful bounds of a rotation should be derived from its occupied cells, not from visual centering inside the `4x4` container.
+The practical rotation origin is therefore still virtual, but it is now a virtual centered origin for the default piece family rather than a bottom-left-normalized one.
 
-Normalization is a storage convention, not the collision rule.
+Per-rotation extents are still required:
 
-It helps by keeping the stored geometry consistent:
+- right extent
+- bottom extent
+- and later, if useful, left/top extents as well
 
-- no dead space below the piece
-- no dead space to the left of the piece
-- more predictable spawn and clipping behavior
-- more meaningful per-rotation bounds metadata
+These extents should be treated as metadata derived from the occupied cells of each stored rotation, not from the size of the container itself.
 
-But it should not be treated as the reason collision works. Correct collision comes from testing occupied cells, not from trusting the shape container.
+Collision still does **not** come from the container. It comes from testing occupied cells. The decisive rule remains occupied-bit overlap against landed rows.
 
 Why this is better for Z80:
 
@@ -253,8 +252,8 @@ Keep the current falling piece state minimal:
 ```text
 current_piece      ; 0..6
 current_rotation   ; 0..3
-current_x          ; board x of 4x4 local origin
-current_y          ; board y of 4x4 local origin
+current_x          ; board x of the local shape frame
+current_y          ; board y of the local shape frame
 ```
 
 Optional later:
