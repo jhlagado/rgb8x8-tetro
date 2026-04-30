@@ -43,6 +43,8 @@
         ORG     0x4000
 
 ; TEC-1G matrix ports
+PORT_DIGITS:    EQU     0x01
+PORT_SEGS:      EQU     0x02
 PORT_ROW:       EQU     0x05
 PORT_RED:       EQU     0x06
 PORT_GREEN:     EQU     0xF8
@@ -64,6 +66,7 @@ X_MIN:          EQU     0
 X_MAX:          EQU     5
 Y_MIN:          EQU     0
 Y_MAX:          EQU     4
+PIECE_T0_BOTTOM: EQU    3
 SCAN_MASK_START: EQU    0x01
 
 START:
@@ -89,6 +92,7 @@ INIT_STATE:
 
         XOR     A
         LD      (LAST_KEY),A
+        LD      (DIAG_LATCH),A
         LD      (FRAME_PHASE),A
         LD      (LOGIC_SLICE),A
 
@@ -171,6 +175,7 @@ SAVE_NEXT_SCAN_PTR:
 ; Clobbers:
 ;   A, HL, and whatever the called slice routines clobber
 LOGIC_TICK:
+        CALL    SANITIZE_ACTIVE_POSITION
         LD      A,(LOGIC_SLICE)
         AND     7
         CP      0
@@ -190,6 +195,7 @@ LOGIC_TICK:
 ; --- slice 7: final 4B clear, render to back buffer, copy to live framebuffer
         LD      A,28
         CALL    CLEAR_BACK_4
+        CALL    RENDER_BOARD_TO_BACK
         CALL    RENDER_ACTIVE_TO_BACK
         CALL    COPY_BACK_TO_FRONT
         JR      LOGIC_SLICE_NEXT
@@ -330,7 +336,11 @@ MOVE_RIGHT:
         LD      A,(PENDING_Y)
         LD      E,A
         CALL    CHECK_COLLISION_AT_DE
-        RET     C
+        JR      NC,MOVE_RIGHT_COMMIT
+        LD      A,3
+        CALL    DIAG_SET_FAULT
+        RET
+MOVE_RIGHT_COMMIT:
         LD      A,(PENDING_X)
         LD      (PLAYER_X),A
         RET
@@ -355,7 +365,11 @@ MOVE_LEFT:
         LD      A,(PENDING_Y)
         LD      E,A
         CALL    CHECK_COLLISION_AT_DE
-        RET     C
+        JR      NC,MOVE_LEFT_COMMIT
+        LD      A,3
+        CALL    DIAG_SET_FAULT
+        RET
+MOVE_LEFT_COMMIT:
         LD      A,(PENDING_X)
         LD      (PLAYER_X),A
         RET
@@ -386,7 +400,11 @@ APPLY_GRAVITY:
         LD      A,(PENDING_Y)
         LD      E,A
         CALL    CHECK_COLLISION_AT_DE
-        JR      C,LOCK_ACTIVE_PIECE
+        JR      NC,GRAVITY_COMMIT
+        LD      A,1
+        CALL    DIAG_SET_FAULT
+        JR      LOCK_ACTIVE_PIECE
+GRAVITY_COMMIT:
         LD      A,(PENDING_Y)
         LD      (PLAYER_Y),A
         RET
@@ -394,6 +412,29 @@ APPLY_GRAVITY:
 LOCK_ACTIVE_PIECE:
         CALL    MERGE_ACTIVE_TO_BOARD
         CALL    SPAWN_ACTIVE_PIECE
+        RET
+
+; SANITIZE_ACTIVE_POSITION
+; Input:
+;   PLAYER_X, PLAYER_Y in RAM
+; Output:
+;   PLAYER_X clamped to X_MIN..X_MAX
+;   PLAYER_Y clamped to Y_MIN..Y_MAX
+; Clobbers:
+;   A
+SANITIZE_ACTIVE_POSITION:
+        LD      A,(PLAYER_X)
+        CP      X_MAX+1
+        JR      C,SANITIZE_X_DONE
+        LD      A,X_MAX
+        LD      (PLAYER_X),A
+SANITIZE_X_DONE:
+        LD      A,(PLAYER_Y)
+        CP      Y_MAX+1
+        JR      C,SANITIZE_Y_DONE
+        LD      A,Y_MAX
+        LD      (PLAYER_Y),A
+SANITIZE_Y_DONE:
         RET
 
 ; Full rebuild (used at init). Build in back buffer, then copy to live FB.
@@ -481,6 +522,8 @@ CLEAR_BOARD_LOOP:
         LD      (HL),A
         INC     HL
         DJNZ    CLEAR_BOARD_LOOP
+        LD      A,1
+        LD      (BOARD_EMPTY),A
         RET
 
 ; SPAWN_ACTIVE_PIECE
@@ -488,7 +531,7 @@ CLEAR_BOARD_LOOP:
 ;   none
 ; Output:
 ;   active-piece state reset to spawn position
-;   may clear BOARD_ROWS if spawn collides immediately
+;   halts on immediate spawn collision for diagnosis
 ; Clobbers:
 ;   A, D, E
 SPAWN_ACTIVE_PIECE:
@@ -511,12 +554,16 @@ SPAWN_ACTIVE_PIECE:
         LD      A,(PENDING_Y)
         LD      E,A
         CALL    CHECK_COLLISION_AT_DE
-        RET     NC
-        CALL    CLEAR_BOARD
-        LD      A,3
-        LD      (PLAYER_X),A
+        JR      C,SPAWN_FAILED
+        LD      A,(DIAG_LATCH)
+        OR      A
+        RET     NZ
         XOR     A
-        LD      (PLAYER_Y),A
+        CALL    DIAG_SET
+        RET
+SPAWN_FAILED:
+        LD      A,2
+        CALL    DIAG_SET_FAULT
         RET
 
 ; RENDER_BOARD_TO_BACK
@@ -525,8 +572,11 @@ SPAWN_ACTIVE_PIECE:
 ; Output:
 ;   landed board ORed into FRAMEBUFFER_BACK in white
 ; Clobbers:
-;   A, B, C, D, E, HL
+;   A, C
 RENDER_BOARD_TO_BACK:
+        PUSH    BC
+        PUSH    DE
+        PUSH    HL
         LD      HL,BOARD_ROWS
         LD      DE,FRAMEBUFFER_BACK
         LD      B,ROW_COUNT
@@ -536,9 +586,14 @@ RENDER_BOARD_ROW:
         EX      DE,HL
         CALL    WRITE_WHITE_ROW_MASK
         INC     HL
+        INC     HL
         EX      DE,HL
         INC     HL
         DJNZ    RENDER_BOARD_ROW
+RENDER_BOARD_TO_BACK_EXIT:
+        POP     HL
+        POP     DE
+        POP     BC
         RET
 
 ; Draw the active 4x4 bitmap into the back buffer (same layout as live FB).
@@ -548,8 +603,11 @@ RENDER_BOARD_ROW:
 ; Output:
 ;   active piece ORed into FRAMEBUFFER_BACK in white
 ; Clobbers:
-;   A, B, C, D, E, HL
+;   A, C
 RENDER_ACTIVE_TO_BACK:
+        PUSH    BC
+        PUSH    DE
+        PUSH    HL
         LD      A,(PLAYER_Y)
         ADD     A,A
         ADD     A,A
@@ -572,6 +630,10 @@ RENDER_SHAPE_ROW:
         INC     HL
         INC     DE
         DJNZ    RENDER_SHAPE_ROW
+RENDER_ACTIVE_TO_BACK_EXIT:
+        POP     HL
+        POP     DE
+        POP     BC
         RET
 
 ; Candidate placement test.
@@ -582,44 +644,85 @@ RENDER_SHAPE_ROW:
 ;   carry set if placement collides or is out of bounds
 ;   carry clear if placement is legal
 ; Clobbers:
-;   A, B, C, D, E, HL, BC
+;   A, C
 CHECK_COLLISION_AT_DE:
+        PUSH    BC
+        PUSH    DE
+        PUSH    HL
         LD      A,D
         CP      X_MIN
-        JR      C,COLLISION_TRUE
+        JR      C,COLLISION_TRUE_XBOUND
         CP      X_MAX+1
-        JR      NC,COLLISION_TRUE
+        JR      NC,COLLISION_TRUE_XBOUND
         LD      (SHIFT_COUNT),A
-        LD      A,E
-        CP      Y_MAX+1
-        JR      NC,COLLISION_TRUE
-
-        PUSH    DE
-        LD      HL,PIECE_T0
-        EX      DE,HL
-
-        POP     DE
         LD      A,E
         LD      L,A
         LD      H,0
-        LD      BC,BOARD_ROWS
-        ADD     HL,BC
         LD      B,4
+        LD      DE,PIECE_T0
+        LD      A,(BOARD_EMPTY)
+        OR      A
+        JR      Z,CHECK_COLLISION_ROW
+        JR      CHECK_COLLISION_EMPTY_BOARD_SIMPLE
 
 CHECK_COLLISION_ROW:
         LD      A,(DE)
         CALL    SHIFT_ROW_MASK
         LD      C,A
+        OR      A
+        JR      Z,COLLISION_NEXT_ROW
+        LD      A,L
+        CP      ROW_COUNT
+        JR      NC,COLLISION_TRUE_ROW_BOTTOM
+        PUSH    HL
+        PUSH    DE
+        LD      H,0
+        LD      DE,BOARD_ROWS
+        ADD     HL,DE
+        LD      A,(HL)
+        LD      (TRACE_OVERLAP_BOARD),A
+        LD      A,C
+        LD      (TRACE_OVERLAP_MASK),A
+        LD      A,L
+        LD      (TRACE_OVERLAP_ROW),A
+        LD      A,D
+        LD      (TRACE_OVERLAP_X),A
+        LD      A,(PENDING_Y)
+        LD      (TRACE_OVERLAP_Y),A
         LD      A,(HL)
         AND     C
-        JR      NZ,COLLISION_TRUE
+        POP     DE
+        POP     HL
+        JR      NZ,COLLISION_TRUE_ROW_OVERLAP
+COLLISION_NEXT_ROW:
         INC     DE
         INC     HL
         DJNZ    CHECK_COLLISION_ROW
         OR      A
-        RET
-COLLISION_TRUE:
+        JR      COLLISION_EXIT_OK
+
+CHECK_COLLISION_EMPTY_BOARD_SIMPLE:
+        LD      A,L
+        ADD     A,PIECE_T0_BOTTOM
+        CP      ROW_COUNT
+        JR      NC,COLLISION_TRUE_ROW_BOTTOM
+        OR      A
+        JR      COLLISION_EXIT_OK
+
+COLLISION_TRUE_XBOUND:
         SCF
+        JR      COLLISION_EXIT_OK
+
+COLLISION_TRUE_ROW_BOTTOM:
+        SCF
+        JR      COLLISION_EXIT_OK
+
+COLLISION_TRUE_ROW_OVERLAP:
+        SCF
+COLLISION_EXIT_OK:
+        POP     HL
+        POP     DE
+        POP     BC
         RET
 
 ; MERGE_ACTIVE_TO_BOARD
@@ -628,8 +731,13 @@ COLLISION_TRUE:
 ; Output:
 ;   active piece ORed into BOARD_ROWS
 ; Clobbers:
-;   A, B, C, D, E, HL, BC
+;   A, C
 MERGE_ACTIVE_TO_BOARD:
+        PUSH    BC
+        PUSH    DE
+        PUSH    HL
+        XOR     A
+        LD      (BOARD_EMPTY),A
         LD      A,(PLAYER_X)
         LD      (SHIFT_COUNT),A
         LD      DE,PIECE_T0
@@ -651,6 +759,10 @@ MERGE_BOARD_ROW:
         INC     DE
         INC     HL
         DJNZ    MERGE_BOARD_ROW
+MERGE_ACTIVE_TO_BOARD_EXIT:
+        POP     HL
+        POP     DE
+        POP     BC
         RET
 
 ; OR mask C into red, green, and blue of the row (HL = row R on entry).
@@ -702,6 +814,68 @@ SHIFT_ROW_DONE:
         LD      A,C
         RET
 
+; DIAG_SET
+; Input:
+;   A = diagnostic nibble 0..F
+; Output:
+;   DIAG_CODE updated and one 7-seg digit latched
+; Clobbers:
+;   A, HL, BC
+DIAG_SET:
+        PUSH    DE
+        LD      (DIAG_CODE),A
+        AND     0x0F
+        LD      L,A
+        LD      H,0
+        LD      BC,DIAG_SEG_TABLE
+        ADD     HL,BC
+        LD      A,(HL)
+        OUT     (PORT_SEGS),A
+        LD      A,0x20
+        OUT     (PORT_DIGITS),A
+        POP     DE
+        RET
+
+; DIAG_SET_FAULT
+; Input:
+;   A = diagnostic nibble 1..F
+; Output:
+;   latches first nonzero fault code only
+; Clobbers:
+;   A, HL, BC
+DIAG_SET_FAULT:
+        PUSH    DE
+        LD      E,A
+        LD      A,(DIAG_LATCH)
+        OR      A
+        JR      NZ,DIAG_SET_FAULT_EXIT
+        LD      A,E
+        LD      (DIAG_LATCH),A
+        POP     DE
+        JP      DIAG_SET
+DIAG_SET_FAULT_EXIT:
+        POP     DE
+        RET
+
+; Seven-segment patterns for 0..F, copied from MON-3 hexToSegmentTable.
+DIAG_SEG_TABLE:
+        DB      0xEB
+        DB      0x28
+        DB      0xCD
+        DB      0xAD
+        DB      0x2E
+        DB      0xA7
+        DB      0xE7
+        DB      0x29
+        DB      0xEF
+        DB      0x2F
+        DB      0x6F
+        DB      0xE6
+        DB      0xC3
+        DB      0xEC
+        DB      0xC7
+        DB      0x47
+
 ; Current test bitmap: T piece, rotation 0.
 ; Stored once, bottom-aligned in the 4x4 box. Horizontal placement is applied
 ; at runtime by shifting each row mask right by PLAYER_X / candidate x.
@@ -742,6 +916,12 @@ PENDING_Y:
 SHIFT_COUNT:
         DS      1
 
+DIAG_CODE:
+        DS      1
+
+DIAG_LATCH:
+        DS      1
+
 FRAME_PHASE:
         DS      1
 
@@ -756,6 +936,24 @@ SCAN_PTR:
 
 BOARD_ROWS:
         DS      ROW_COUNT
+
+BOARD_EMPTY:
+        DS      1
+
+TRACE_OVERLAP_BOARD:
+        DS      1
+
+TRACE_OVERLAP_MASK:
+        DS      1
+
+TRACE_OVERLAP_ROW:
+        DS      1
+
+TRACE_OVERLAP_X:
+        DS      1
+
+TRACE_OVERLAP_Y:
+        DS      1
 
 FRAMEBUFFER:
         DS      FRAMEBUFFER_BYTES
