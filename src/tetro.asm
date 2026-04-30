@@ -66,6 +66,7 @@ X_MIN:          EQU     0
 X_MAX:          EQU     5
 Y_MIN:          EQU     0
 Y_MAX:          EQU     4
+SPAWN_Y:        EQU     0xFD
 PIECE_T0_BOTTOM: EQU    3
 SCAN_MASK_START: EQU    0x01
 
@@ -430,6 +431,8 @@ SANITIZE_ACTIVE_POSITION:
         LD      (PLAYER_X),A
 SANITIZE_X_DONE:
         LD      A,(PLAYER_Y)
+        BIT     7,A
+        JR      NZ,SANITIZE_Y_DONE
         CP      Y_MAX+1
         JR      C,SANITIZE_Y_DONE
         LD      A,Y_MAX
@@ -531,13 +534,13 @@ CLEAR_BOARD_LOOP:
 ;   none
 ; Output:
 ;   active-piece state reset to spawn position
-;   halts on immediate spawn collision for diagnosis
+;   returns fault if spawn collides immediately
 ; Clobbers:
 ;   A, D, E
 SPAWN_ACTIVE_PIECE:
         LD      A,3
         LD      (PLAYER_X),A
-        XOR     A
+        LD      A,SPAWN_Y
         LD      (PLAYER_Y),A
         LD      A,MOVE_PERIOD
         LD      (MOVE_COOLDOWN),A
@@ -547,7 +550,7 @@ SPAWN_ACTIVE_PIECE:
         LD      (LAST_KEY),A
         LD      A,3
         LD      (PENDING_X),A
-        XOR     A
+        LD      A,SPAWN_Y
         LD      (PENDING_Y),A
         LD      A,(PENDING_X)
         LD      D,A
@@ -608,16 +611,11 @@ RENDER_ACTIVE_TO_BACK:
         PUSH    BC
         PUSH    DE
         PUSH    HL
-        LD      A,(PLAYER_Y)
-        ADD     A,A
-        ADD     A,A
-        LD      E,A
-        LD      D,0
-        LD      HL,FRAMEBUFFER_BACK
-        ADD     HL,DE
-
         LD      A,(PLAYER_X)
         LD      (SHIFT_COUNT),A
+        LD      A,(PLAYER_Y)
+        LD      L,A
+        LD      H,0
         LD      DE,PIECE_T0
         LD      B,4
 
@@ -625,10 +623,28 @@ RENDER_SHAPE_ROW:
         LD      A,(DE)
         CALL    SHIFT_ROW_MASK
         LD      C,A
+        LD      A,C
+        OR      A
+        JR      Z,RENDER_SHAPE_NEXT_ROW
+        BIT     7,L
+        JR      NZ,RENDER_SHAPE_NEXT_ROW
+        LD      A,L
+        CP      ROW_COUNT
+        JR      NC,RENDER_SHAPE_NEXT_ROW
+        PUSH    HL
+        PUSH    DE
+        ADD     A,A
+        ADD     A,A
+        LD      E,A
+        LD      D,0
+        LD      HL,FRAMEBUFFER_BACK
+        ADD     HL,DE
         CALL    WRITE_WHITE_ROW_MASK
-        INC     HL
-        INC     HL
+        POP     DE
+        POP     HL
+RENDER_SHAPE_NEXT_ROW:
         INC     DE
+        INC     HL
         DJNZ    RENDER_SHAPE_ROW
 RENDER_ACTIVE_TO_BACK_EXIT:
         POP     HL
@@ -671,6 +687,8 @@ CHECK_COLLISION_ROW:
         LD      C,A
         OR      A
         JR      Z,COLLISION_NEXT_ROW
+        BIT     7,L
+        JR      NZ,COLLISION_NEXT_ROW
         LD      A,L
         CP      ROW_COUNT
         JR      NC,COLLISION_TRUE_ROW_BOTTOM
@@ -740,22 +758,35 @@ MERGE_ACTIVE_TO_BOARD:
         LD      (BOARD_EMPTY),A
         LD      A,(PLAYER_X)
         LD      (SHIFT_COUNT),A
-        LD      DE,PIECE_T0
-
         LD      A,(PLAYER_Y)
         LD      L,A
         LD      H,0
-        LD      BC,BOARD_ROWS
-        ADD     HL,BC
+        LD      DE,PIECE_T0
         LD      B,4
 
 MERGE_BOARD_ROW:
         LD      A,(DE)
         CALL    SHIFT_ROW_MASK
         LD      C,A
+        LD      A,C
+        OR      A
+        JR      Z,MERGE_BOARD_NEXT
+        BIT     7,L
+        JR      NZ,MERGE_BOARD_NEXT
+        LD      A,L
+        CP      ROW_COUNT
+        JR      NC,MERGE_BOARD_NEXT
+        PUSH    HL
+        PUSH    DE
+        LD      H,0
+        LD      DE,BOARD_ROWS
+        ADD     HL,DE
         LD      A,(HL)
         OR      C
         LD      (HL),A
+        POP     DE
+        POP     HL
+MERGE_BOARD_NEXT:
         INC     DE
         INC     HL
         DJNZ    MERGE_BOARD_ROW
