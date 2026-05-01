@@ -81,6 +81,7 @@ MOVE_PERIOD:    EQU     16
 DROP_PERIOD:    EQU     1
 ; Decremented once per full 8-slice pass (in slice 1). Larger = slower fall.
 GRAVITY_PERIOD: EQU     160
+LINE_CLEAR_HOLD: EQU    24
 X_MIN:          EQU     0
 Y_MIN:          EQU     0
 Y_MAX:          EQU     7
@@ -115,6 +116,10 @@ INIT_STATE:
         XOR     A
         LD      (GAME_OVER),A
         LD      (ACTIVE_PIECE_ENABLED),A
+        LD      (CLEAR_PENDING),A
+        LD      (CLEAR_MASK),A
+        LD      (CLEAR_TIMER),A
+        LD      (DROP_LOCKOUT),A
         LD      (DIAG_LATCH),A
         LD      (FRAME_PHASE),A
         LD      (LOGIC_SLICE),A
@@ -209,6 +214,12 @@ LOGIC_TICK:
         LD      A,(GAME_OVER)
         OR      A
         RET     NZ
+        LD      A,(CLEAR_PENDING)
+        OR      A
+        JR      Z,LOGIC_TICK_CLEAR_DONE
+        CALL    HANDLE_LINE_CLEAR_STATE
+        JR      LOGIC_TICK_ACTIVE
+LOGIC_TICK_CLEAR_DONE:
         LD      A,(PAUSED)
         OR      A
         JR      Z,LOGIC_TICK_ACTIVE
@@ -240,13 +251,21 @@ LOGIC_TICK_ACTIVE:
         JR      LOGIC_SLICE_NEXT
 
 LOGIC_SL0:
+        LD      A,(CLEAR_PENDING)
+        OR      A
+        JR      NZ,LOGIC_SL0_NO_INPUT
         CALL    POLL_INPUT_AND_UPDATE
+LOGIC_SL0_NO_INPUT:
         XOR     A
         CALL    CLEAR_BACK_4
         JR      LOGIC_SLICE_NEXT
 
 LOGIC_SL1:
+        LD      A,(CLEAR_PENDING)
+        OR      A
+        JR      NZ,LOGIC_SL1_NO_GRAVITY
         CALL    APPLY_GRAVITY
+LOGIC_SL1_NO_GRAVITY:
         LD      A,4
         CALL    CLEAR_BACK_4
         JR      LOGIC_SLICE_NEXT
@@ -562,6 +581,16 @@ LOCK_ACTIVE_PIECE:
         CALL    CHECK_TOP_OUT_ON_LOCK
         JR      C,LOCK_GAME_OVER
         CALL    MERGE_ACTIVE_TO_BOARD
+        CALL    CHECK_FULL_ROWS
+        JR      NC,LOCK_ACTIVE_NO_CLEAR
+        XOR     A
+        LD      (ACTIVE_PIECE_ENABLED),A
+        LD      A,1
+        LD      (CLEAR_PENDING),A
+        LD      A,LINE_CLEAR_HOLD
+        LD      (CLEAR_TIMER),A
+        RET
+LOCK_ACTIVE_NO_CLEAR:
         CALL    SPAWN_ACTIVE_PIECE
         RET
 
@@ -783,11 +812,15 @@ ROTATE_CW:
         LD      A,(PLAYER_Y)
         LD      E,A
         CALL    CHECK_COLLISION_AT_DE
-        RET     NC
+        JR      NC,ROTATE_CW_COMMIT
 
         LD      A,(PENDING_ROTATION)
         LD      (CURRENT_ROTATION),A
         JP      LOAD_CURRENT_ROTATION_STATE
+ROTATE_CW_COMMIT:
+        LD      A,GRAVITY_PERIOD
+        LD      (GRAVITY_COOLDOWN),A
+        RET
 
 ; ROTATE_LEFT
 ; Input:
@@ -812,11 +845,15 @@ ROTATE_LEFT_DEC:
         LD      A,(PLAYER_Y)
         LD      E,A
         CALL    CHECK_COLLISION_AT_DE
-        RET     NC
+        JR      NC,ROTATE_LEFT_COMMIT
 
         LD      A,(PENDING_ROTATION)
         LD      (CURRENT_ROTATION),A
         JP      LOAD_CURRENT_ROTATION_STATE
+ROTATE_LEFT_COMMIT:
+        LD      A,GRAVITY_PERIOD
+        LD      (GRAVITY_COOLDOWN),A
+        RET
 
 ; SPAWN_ACTIVE_PIECE
 ; Input:
@@ -902,6 +939,32 @@ RENDER_BOARD_ROW:
         LD      (HL),A
         INC     HL
         INC     HL
+
+        LD      A,(CLEAR_PENDING)
+        OR      A
+        JR      Z,RENDER_BOARD_ROW_NEXT
+        PUSH    HL
+        LD      H,0
+        LD      L,C
+        LD      DE,ROW_BIT_TABLE
+        ADD     HL,DE
+        LD      A,(CLEAR_MASK)
+        AND     (HL)
+        POP     HL
+        JR      Z,RENDER_BOARD_ROW_NEXT
+        DEC     HL
+        DEC     HL
+        DEC     HL
+        DEC     HL
+        LD      A,0xFF
+        LD      (HL),A
+        INC     HL
+        LD      (HL),A
+        INC     HL
+        LD      (HL),A
+        INC     HL
+        INC     HL
+RENDER_BOARD_ROW_NEXT:
         INC     C
         DJNZ    RENDER_BOARD_ROW
 RENDER_BOARD_TO_BACK_EXIT:
@@ -1122,6 +1185,238 @@ ENTER_GAME_OVER:
         CALL    DIAG_SET
         CALL    REBUILD_FRAMEBUFFER
         JP      LCD_SHOW_GAME_OVER
+
+; HANDLE_LINE_CLEAR_STATE
+; Input:
+;   CLEAR_PENDING / CLEAR_TIMER / LOGIC_SLICE in RAM
+; Output:
+;   advances clear-hold countdown once per full logic cycle
+;   collapses full rows and spawns next piece when timer expires
+; Clobbers:
+;   A, B, D, E, HL
+HANDLE_LINE_CLEAR_STATE:
+        LD      A,(LOGIC_SLICE)
+        OR      A
+        RET     NZ
+        LD      A,(CLEAR_TIMER)
+        DEC     A
+        LD      (CLEAR_TIMER),A
+        RET     NZ
+        CALL    COLLAPSE_FULL_ROWS
+        XOR     A
+        LD      (CLEAR_PENDING),A
+        CALL    RECOMPUTE_BOARD_EMPTY
+        JP      SPAWN_ACTIVE_PIECE
+
+; CHECK_FULL_ROWS
+; Input:
+;   BOARD_ROWS
+; Output:
+;   CLEAR_MASK updated
+;   carry set if one or more rows are full
+; Clobbers:
+;   A, B, C, E, HL
+CHECK_FULL_ROWS:
+        LD      HL,BOARD_ROWS
+        LD      B,ROW_COUNT
+        LD      C,1
+        XOR     A
+        LD      E,A
+CHECK_FULL_ROWS_LOOP:
+        LD      A,(HL)
+        CP      0xFF
+        JR      NZ,CHECK_FULL_ROWS_NEXT
+        LD      A,E
+        OR      C
+        LD      E,A
+CHECK_FULL_ROWS_NEXT:
+        INC     HL
+        SLA     C
+        DJNZ    CHECK_FULL_ROWS_LOOP
+        LD      A,E
+        LD      (CLEAR_MASK),A
+        OR      A
+        JR      Z,CHECK_FULL_ROWS_NONE
+        SCF
+        RET
+CHECK_FULL_ROWS_NONE:
+        OR      A
+        RET
+
+; COLLAPSE_FULL_ROWS
+; Input:
+;   CLEAR_MASK, BOARD_ROWS, BOARD_RED, BOARD_GREEN, BOARD_BLUE
+; Output:
+;   completed rows removed, rows above collapsed downward
+; Clobbers:
+;   A, B, C, D, E, HL
+COLLAPSE_FULL_ROWS:
+        LD      B,ROW_COUNT
+        LD      D,ROW_COUNT-1
+        LD      E,ROW_COUNT-1
+COLLAPSE_SCAN_LOOP:
+        LD      A,D
+        LD      L,A
+        LD      H,0
+        PUSH    BC
+        LD      BC,ROW_BIT_TABLE
+        ADD     HL,BC
+        LD      A,(CLEAR_MASK)
+        AND     (HL)
+        POP     BC
+        JR      NZ,COLLAPSE_SKIP_ROW
+        LD      A,D
+        CP      E
+        JR      Z,COLLAPSE_ROW_DONE
+        PUSH    BC
+        PUSH    DE
+        CALL    COPY_BOARD_ROW_DE_TO_E
+        POP     DE
+        POP     BC
+COLLAPSE_ROW_DONE:
+        DEC     E
+COLLAPSE_SKIP_ROW:
+        DEC     D
+        DJNZ    COLLAPSE_SCAN_LOOP
+
+        LD      A,E
+        INC     A
+        RET     Z
+        LD      B,A
+        XOR     A
+        LD      D,A
+COLLAPSE_CLEAR_TOP_LOOP:
+        PUSH    BC
+        CALL    CLEAR_BOARD_ROW_D
+        POP     BC
+        INC     D
+        DJNZ    COLLAPSE_CLEAR_TOP_LOOP
+        RET
+
+; COPY_BOARD_ROW_D_TO_E
+; Input:
+;   D = source row index
+;   E = destination row index
+; Output:
+;   BOARD_ROWS and landed RGB planes copied from D to E
+; Clobbers:
+;   A, BC, HL
+COPY_BOARD_ROW_DE_TO_E:
+        LD      A,D
+        LD      L,A
+        LD      H,0
+        LD      BC,BOARD_ROWS
+        ADD     HL,BC
+        LD      A,(HL)
+        PUSH    AF
+        LD      A,E
+        LD      L,A
+        LD      H,0
+        LD      BC,BOARD_ROWS
+        ADD     HL,BC
+        POP     AF
+        LD      (HL),A
+
+        LD      A,D
+        LD      L,A
+        LD      H,0
+        LD      BC,BOARD_RED
+        ADD     HL,BC
+        LD      A,(HL)
+        PUSH    AF
+        LD      A,E
+        LD      L,A
+        LD      H,0
+        LD      BC,BOARD_RED
+        ADD     HL,BC
+        POP     AF
+        LD      (HL),A
+
+        LD      A,D
+        LD      L,A
+        LD      H,0
+        LD      BC,BOARD_GREEN
+        ADD     HL,BC
+        LD      A,(HL)
+        PUSH    AF
+        LD      A,E
+        LD      L,A
+        LD      H,0
+        LD      BC,BOARD_GREEN
+        ADD     HL,BC
+        POP     AF
+        LD      (HL),A
+
+        LD      A,D
+        LD      L,A
+        LD      H,0
+        LD      BC,BOARD_BLUE
+        ADD     HL,BC
+        LD      A,(HL)
+        PUSH    AF
+        LD      A,E
+        LD      L,A
+        LD      H,0
+        LD      BC,BOARD_BLUE
+        ADD     HL,BC
+        POP     AF
+        LD      (HL),A
+        RET
+
+; CLEAR_BOARD_ROW_D
+; Input:
+;   D = row index
+; Output:
+;   row cleared in occupancy and RGB planes
+; Clobbers:
+;   A, BC, HL
+CLEAR_BOARD_ROW_D:
+        XOR     A
+        LD      L,D
+        LD      H,0
+        LD      BC,BOARD_ROWS
+        ADD     HL,BC
+        LD      (HL),A
+        LD      L,D
+        LD      H,0
+        LD      BC,BOARD_RED
+        ADD     HL,BC
+        LD      (HL),A
+        LD      L,D
+        LD      H,0
+        LD      BC,BOARD_GREEN
+        ADD     HL,BC
+        LD      (HL),A
+        LD      L,D
+        LD      H,0
+        LD      BC,BOARD_BLUE
+        ADD     HL,BC
+        LD      (HL),A
+        RET
+
+; RECOMPUTE_BOARD_EMPTY
+; Input:
+;   BOARD_ROWS
+; Output:
+;   BOARD_EMPTY updated from occupancy rows
+; Clobbers:
+;   A, B, HL
+RECOMPUTE_BOARD_EMPTY:
+        LD      HL,BOARD_ROWS
+        LD      B,ROW_COUNT
+RECOMPUTE_BOARD_EMPTY_LOOP:
+        LD      A,(HL)
+        OR      A
+        JR      NZ,BOARD_NOT_EMPTY
+        INC     HL
+        DJNZ    RECOMPUTE_BOARD_EMPTY_LOOP
+        LD      A,1
+        LD      (BOARD_EMPTY),A
+        RET
+BOARD_NOT_EMPTY:
+        XOR     A
+        LD      (BOARD_EMPTY),A
+        RET
 
 ; MERGE_ACTIVE_TO_BOARD
 ; Input:
@@ -1460,6 +1755,16 @@ DIAG_SEG_TABLE:
         DB      0xC7
         DB      0x47
 
+ROW_BIT_TABLE:
+        DB      0x01
+        DB      0x02
+        DB      0x04
+        DB      0x08
+        DB      0x10
+        DB      0x20
+        DB      0x40
+        DB      0x80
+
 LCD_TEXT_GAME_OVER:
         DB      "TETRO GAME OVER",0
 
@@ -1729,6 +2034,15 @@ GAME_OVER:
         DS      1
 
 ACTIVE_PIECE_ENABLED:
+        DS      1
+
+CLEAR_PENDING:
+        DS      1
+
+CLEAR_MASK:
+        DS      1
+
+CLEAR_TIMER:
         DS      1
 
 DIAG_CODE:

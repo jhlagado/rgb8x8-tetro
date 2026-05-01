@@ -496,6 +496,22 @@ shifted_piece_row AND landed_board_row != 0
 
 If that result is nonzero, a collision has occurred.
 
+## Line clear strategy
+
+First implementation:
+
+- detect all completed rows after a lock/merge
+- latch a clear-pending state and a row mask
+- suspend normal gameplay updates during clear pending
+- render completed rows as solid white for a short hold
+- collapse all completed rows together
+- spawn the next piece only after collapse completes
+
+Possible later enhancement:
+
+- if multiple rows are completed together, remove them one at a time
+- let the visible stack settle between removals so the downward motion reads more smoothly on the `8x8` board
+
 This applies uniformly to:
 
 - downward movement
