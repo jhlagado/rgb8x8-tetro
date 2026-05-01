@@ -358,6 +358,16 @@ More concretely:
 - the `7`-segment scan should be interleaved into the same cooperative loop
 - a simple first approach is to advance one `7`-segment digit per matrix row tick
 - this keeps the scoreboard visually alive without introducing a second timing model
+- because the TEC-1G speaker shares the digit port, digit-select output should be treated as `digit_mask OR speaker_state`
+
+Initial scoring baseline:
+
+- `1` cleared row = `100`
+- `2` cleared rows = `300`
+- `3` cleared rows = `500`
+- `4` cleared rows = `800`
+
+Also track total cleared rows separately from score. Ordinary piece locks do not award score.
 
 ### Simple speaker output
 

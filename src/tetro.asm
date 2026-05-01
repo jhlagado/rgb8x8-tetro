@@ -91,6 +91,7 @@ SCAN_MASK_START: EQU    0x01
 COLOR_RED:      EQU     0x01
 COLOR_GREEN:    EQU     0x02
 COLOR_BLUE:     EQU     0x04
+SPEAKER_BIT:    EQU     0x80
 
 START:
         CALL    INIT_STATE
@@ -127,8 +128,14 @@ INIT_STATE:
         LD      (CURRENT_ROTATION),A
         LD      (CURRENT_PIECE_INDEX),A
         LD      (NEXT_PIECE_INDEX),A
+        LD      (LINES_CLEARED_TOTAL),A
+        LD      (SCORE_LO),A
+        LD      (SCORE_HI),A
         LD      A,NO_KEY
         LD      (LAST_KEY),A
+        XOR     A
+        LD      (HUD_SCAN_INDEX),A
+        LD      (SPEAKER_PORT_STATE),A
 
         LD      A,SCAN_MASK_START
         LD      (SCAN_MASK),A
@@ -138,6 +145,7 @@ INIT_STATE:
 
         CALL    CLEAR_BOARD
         CALL    SPAWN_ACTIVE_PIECE
+        CALL    UPDATE_SCORE_DISPLAY
         CALL    LCD_SHOW_RUNNING
         JP      REBUILD_FRAMEBUFFER
 
@@ -147,8 +155,9 @@ INIT_STATE:
 ;   uses SCAN_PTR / SCAN_MASK from RAM
 ; Output:
 ;   one matrix row emitted to hardware ports
+;   one seven-segment digit emitted to hardware ports
 ; Clobbers:
-;   A, HL
+;   A, BC, DE, HL
 SCAN_TICK:
         XOR     A
         OUT     (PORT_ROW),A
@@ -169,6 +178,7 @@ SCAN_TICK:
         LD      A,(SCAN_MASK)
         OUT     (PORT_ROW),A
 
+        CALL    SCAN_SCORE_DIGIT
         CALL    ADVANCE_SCAN_STATE
         RET
 
@@ -213,7 +223,10 @@ LOGIC_TICK:
         CALL    SANITIZE_ACTIVE_POSITION
         LD      A,(GAME_OVER)
         OR      A
-        RET     NZ
+        JR      Z,LOGIC_TICK_GAME_OVER_DONE
+        CALL    POLL_GAME_OVER_RESTART
+        RET
+LOGIC_TICK_GAME_OVER_DONE:
         LD      A,(CLEAR_PENDING)
         OR      A
         JR      Z,LOGIC_TICK_CLEAR_DONE
@@ -375,6 +388,19 @@ RESET_MOVE_RATE:
         XOR     A
         LD      (DROP_LOCKOUT),A
         RET
+
+; POLL_GAME_OVER_RESTART
+; Input:
+;   none
+; Output:
+;   restarts the game on a fresh key press
+; Clobbers:
+;   A, C
+POLL_GAME_OVER_RESTART:
+        LD      C,API_SCANKEYS
+        RST     0x10
+        RET     NC
+        JP      INIT_STATE
 
 HANDLE_PAUSE_KEY:
         LD      A,(PAUSED)
@@ -1197,6 +1223,7 @@ HANDLE_LINE_CLEAR_STATE:
         LD      (CLEAR_TIMER),A
         RET     NZ
         CALL    COLLAPSE_FULL_ROWS
+        CALL    APPLY_CLEAR_SCORE
         XOR     A
         LD      (CLEAR_PENDING),A
         CALL    RECOMPUTE_BOARD_EMPTY
@@ -1236,6 +1263,69 @@ CHECK_FULL_ROWS_NEXT:
 CHECK_FULL_ROWS_NONE:
         OR      A
         RET
+
+; COUNT_CLEAR_ROWS
+; Input:
+;   CLEAR_MASK
+; Output:
+;   A = number of set bits in CLEAR_MASK (0..8)
+; Clobbers:
+;   A, B, C
+COUNT_CLEAR_ROWS:
+        LD      A,(CLEAR_MASK)
+        LD      C,A
+        LD      B,0
+COUNT_CLEAR_ROWS_LOOP:
+        LD      A,C
+        OR      A
+        JR      Z,COUNT_CLEAR_ROWS_DONE
+        SRL     C
+        JR      NC,COUNT_CLEAR_ROWS_LOOP
+        INC     B
+        JR      COUNT_CLEAR_ROWS_LOOP
+COUNT_CLEAR_ROWS_DONE:
+        LD      A,B
+        RET
+
+; APPLY_CLEAR_SCORE
+; Input:
+;   CLEAR_MASK
+; Output:
+;   LINES_CLEARED_TOTAL incremented by number of cleared rows
+;   SCORE updated using 100/300/500/800 for 1/2/3/4+ rows
+; Clobbers:
+;   A, D, E, HL
+APPLY_CLEAR_SCORE:
+        CALL    COUNT_CLEAR_ROWS
+        OR      A
+        RET     Z
+        LD      E,A
+        LD      A,(LINES_CLEARED_TOTAL)
+        ADD     A,E
+        LD      (LINES_CLEARED_TOTAL),A
+
+        LD      A,E
+        CP      1
+        JR      NZ,APPLY_CLEAR_SCORE_CHECK2
+        LD      DE,100
+        JR      APPLY_CLEAR_SCORE_ADD
+APPLY_CLEAR_SCORE_CHECK2:
+        CP      2
+        JR      NZ,APPLY_CLEAR_SCORE_CHECK3
+        LD      DE,300
+        JR      APPLY_CLEAR_SCORE_ADD
+APPLY_CLEAR_SCORE_CHECK3:
+        CP      3
+        JR      NZ,APPLY_CLEAR_SCORE_CHECK4
+        LD      DE,500
+        JR      APPLY_CLEAR_SCORE_ADD
+APPLY_CLEAR_SCORE_CHECK4:
+        LD      DE,800
+APPLY_CLEAR_SCORE_ADD:
+        LD      HL,(SCORE_LO)
+        ADD     HL,DE
+        LD      (SCORE_LO),HL
+        JP      UPDATE_SCORE_DISPLAY
 
 ; COLLAPSE_FULL_ROWS
 ; Input:
@@ -1572,22 +1662,11 @@ SHIFT_ROW_DONE:
 ; Input:
 ;   A = diagnostic nibble 0..F
 ; Output:
-;   DIAG_CODE updated and one 7-seg digit latched
+;   DIAG_CODE updated
 ; Clobbers:
-;   A, HL, BC
+;   none
 DIAG_SET:
-        PUSH    DE
         LD      (DIAG_CODE),A
-        AND     0x0F
-        LD      L,A
-        LD      H,0
-        LD      BC,DIAG_SEG_TABLE
-        ADD     HL,BC
-        LD      A,(HL)
-        OUT     (PORT_SEGS),A
-        LD      A,0x20
-        OUT     (PORT_DIGITS),A
-        POP     DE
         RET
 
 ; DIAG_SET_FAULT
@@ -1609,6 +1688,110 @@ DIAG_SET_FAULT:
         JP      DIAG_SET
 DIAG_SET_FAULT_EXIT:
         POP     DE
+        RET
+
+; SCAN_SCORE_DIGIT
+; Input:
+;   HUD_SEG_BUFFER / HUD_SCAN_INDEX / SPEAKER_PORT_STATE
+; Output:
+;   one seven-segment digit refreshed
+; Clobbers:
+;   A, B, C, DE, HL
+SCAN_SCORE_DIGIT:
+        LD      A,(HUD_SCAN_INDEX)
+        LD      C,A
+        LD      L,A
+        LD      H,0
+        LD      DE,HUD_SEG_BUFFER
+        ADD     HL,DE
+        LD      A,(HL)
+        OUT     (PORT_SEGS),A
+
+        LD      A,C
+        LD      L,A
+        LD      H,0
+        LD      DE,DIGIT_MASK_TABLE
+        ADD     HL,DE
+        LD      A,(HL)
+        LD      B,A
+        LD      A,(SPEAKER_PORT_STATE)
+        OR      B
+        OUT     (PORT_DIGITS),A
+
+        LD      A,C
+        INC     A
+        CP      6
+        JR      C,SCAN_SCORE_DIGIT_SAVE
+        XOR     A
+SCAN_SCORE_DIGIT_SAVE:
+        LD      (HUD_SCAN_INDEX),A
+        RET
+
+; UPDATE_SCORE_DISPLAY
+; Input:
+;   SCORE_LO / SCORE_HI
+; Output:
+;   HUD_SEG_BUFFER updated with a six-digit score display
+; Clobbers:
+;   A, BC, DE, HL
+UPDATE_SCORE_DISPLAY:
+        XOR     A
+        LD      (HUD_SEG_BUFFER),A
+        LD      HL,(SCORE_LO)
+        LD      BC,HUD_SEG_BUFFER+1
+
+        LD      DE,0x2710      ; 10000
+        CALL    SCORE_WRITE_DIGIT
+        LD      DE,0x03E8      ; 1000
+        CALL    SCORE_WRITE_DIGIT
+        LD      DE,0x0064      ; 100
+        CALL    SCORE_WRITE_DIGIT
+        LD      DE,0x000A      ; 10
+        CALL    SCORE_WRITE_DIGIT
+        LD      DE,0x0001      ; 1
+        CALL    SCORE_WRITE_DIGIT
+        RET
+
+; SCORE_WRITE_DIGIT
+; Input:
+;   HL = score remainder
+;   DE = divisor
+;   BC = destination digit in HUD_SEG_BUFFER
+; Output:
+;   HL = updated score remainder
+;   BC = advanced to next destination
+; Clobbers:
+;   A
+SCORE_WRITE_DIGIT:
+        XOR     A
+SCORE_WRITE_DIGIT_LOOP:
+        PUSH    AF
+        LD      A,H
+        CP      D
+        JR      C,SCORE_WRITE_DIGIT_DONE
+        JR      NZ,SCORE_WRITE_DIGIT_SUB
+        LD      A,L
+        CP      E
+        JR      C,SCORE_WRITE_DIGIT_DONE
+SCORE_WRITE_DIGIT_SUB:
+        POP     AF
+        OR      A
+        SBC     HL,DE
+        INC     A
+        JR      SCORE_WRITE_DIGIT_LOOP
+SCORE_WRITE_DIGIT_DONE:
+        POP     AF
+        PUSH    HL
+        PUSH    BC
+        LD      L,A
+        LD      H,0
+        LD      DE,DIAG_SEG_TABLE
+        ADD     HL,DE
+        LD      A,(HL)
+        POP     BC
+        LD      (BC),A
+        INC     BC
+        POP     HL
         RET
 
 ; LCD_BUSY
@@ -1749,6 +1932,14 @@ DIAG_SEG_TABLE:
         DB      0xC7
         DB      0x47
 
+DIGIT_MASK_TABLE:
+        DB      0x20
+        DB      0x10
+        DB      0x08
+        DB      0x04
+        DB      0x02
+        DB      0x01
+
 ROW_BIT_TABLE:
         DB      0x01
         DB      0x02
@@ -1763,7 +1954,7 @@ LCD_TEXT_GAME_OVER:
         DB      "TETRO GAME OVER",0
 
 LCD_TEXT_RESET:
-        DB      "PRESS RESET",0
+        DB      "PRESS ANY KEY",0
 
 LCD_TEXT_PAUSED:
         DB      "TETRO PAUSED",0
@@ -2041,6 +2232,24 @@ CLEAR_MASK:
 
 CLEAR_TIMER:
         DS      1
+
+LINES_CLEARED_TOTAL:
+        DS      1
+
+SCORE_LO:
+        DS      1
+
+SCORE_HI:
+        DS      1
+
+HUD_SCAN_INDEX:
+        DS      1
+
+SPEAKER_PORT_STATE:
+        DS      1
+
+HUD_SEG_BUFFER:
+        DS      6
 
 DIAG_CODE:
         DS      1
