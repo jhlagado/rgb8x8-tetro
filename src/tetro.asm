@@ -51,10 +51,15 @@
 ; TEC-1G matrix ports
 PORT_DIGITS:    EQU     0x01
 PORT_SEGS:      EQU     0x02
+PORT_LCD_INST:  EQU     0x04
 PORT_ROW:       EQU     0x05
 PORT_RED:       EQU     0x06
+PORT_LCD_DATA:  EQU     0x84
 PORT_GREEN:     EQU     0xF8
 PORT_BLUE:      EQU     0xF9
+
+LCD_ROW1:       EQU     0x80
+LCD_ROW2:       EQU     0xC0
 
 ; MON-3 API / keypad constants
 API_SCANKEYS:   EQU     16
@@ -103,6 +108,8 @@ INIT_STATE:
         LD      (GRAVITY_COOLDOWN),A
 
         XOR     A
+        LD      (GAME_OVER),A
+        LD      (ACTIVE_PIECE_ENABLED),A
         LD      (LAST_KEY),A
         LD      (DIAG_LATCH),A
         LD      (FRAME_PHASE),A
@@ -192,6 +199,9 @@ SAVE_NEXT_SCAN_PTR:
 ;   A, HL, and whatever the called slice routines clobber
 LOGIC_TICK:
         CALL    SANITIZE_ACTIVE_POSITION
+        LD      A,(GAME_OVER)
+        OR      A
+        RET     NZ
         LD      A,(PAUSED)
         OR      A
         JR      Z,LOGIC_TICK_ACTIVE
@@ -522,8 +532,16 @@ SOFT_DROP_COMMIT:
         RET
 
 LOCK_ACTIVE_PIECE:
+        CALL    CHECK_TOP_OUT_ON_LOCK
+        JR      C,LOCK_GAME_OVER
         CALL    MERGE_ACTIVE_TO_BOARD
         CALL    SPAWN_ACTIVE_PIECE
+        RET
+
+LOCK_GAME_OVER:
+        CALL    MERGE_ACTIVE_TO_BOARD
+        LD      A,4
+        CALL    ENTER_GAME_OVER
         RET
 
 ; SANITIZE_ACTIVE_POSITION
@@ -792,6 +810,8 @@ SPAWN_ACTIVE_PIECE:
         LD      E,A
         CALL    CHECK_COLLISION_AT_DE
         JR      C,SPAWN_FAILED
+        LD      A,1
+        LD      (ACTIVE_PIECE_ENABLED),A
         LD      A,(DIAG_LATCH)
         OR      A
         RET     NZ
@@ -800,7 +820,7 @@ SPAWN_ACTIVE_PIECE:
         RET
 SPAWN_FAILED:
         LD      A,2
-        CALL    DIAG_SET_FAULT
+        CALL    ENTER_GAME_OVER
         RET
 
 ; RENDER_BOARD_TO_BACK
@@ -842,6 +862,9 @@ RENDER_BOARD_TO_BACK_EXIT:
 ; Clobbers:
 ;   A, C
 RENDER_ACTIVE_TO_BACK:
+        LD      A,(ACTIVE_PIECE_ENABLED)
+        OR      A
+        RET     Z
         PUSH    BC
         PUSH    DE
         PUSH    HL
@@ -962,8 +985,11 @@ CHECK_COLLISION_EMPTY_BOARD_SIMPLE:
         LD      C,A
         LD      A,(CURRENT_PIECE_BOTTOM)
         ADD     A,C
+        BIT     7,A
+        JR      NZ,COLLISION_EMPTY_OK
         CP      ROW_COUNT
         JR      NC,COLLISION_TRUE_ROW_BOTTOM
+COLLISION_EMPTY_OK:
         OR      A
         JR      COLLISION_EXIT_OK
 
@@ -982,6 +1008,63 @@ COLLISION_EXIT_OK:
         POP     DE
         POP     BC
         RET
+
+; CHECK_TOP_OUT_ON_LOCK
+; Input:
+;   PLAYER_Y, CURRENT_PIECE_PTR
+; Output:
+;   carry set if any occupied row of the active piece is still above the
+;   visible field when the piece is about to lock
+;   carry clear otherwise
+; Clobbers:
+;   A, B, DE, HL
+CHECK_TOP_OUT_ON_LOCK:
+        PUSH    BC
+        PUSH    DE
+        PUSH    HL
+        LD      A,(PLAYER_Y)
+        LD      L,A
+        LD      H,0
+        LD      DE,(CURRENT_PIECE_PTR)
+        LD      B,4
+TOP_OUT_ROW_LOOP:
+        LD      A,(DE)
+        CALL    SHIFT_ROW_MASK
+        OR      A
+        JR      Z,TOP_OUT_NEXT_ROW
+        BIT     7,L
+        JR      NZ,TOP_OUT_TRUE
+TOP_OUT_NEXT_ROW:
+        INC     DE
+        INC     HL
+        DJNZ    TOP_OUT_ROW_LOOP
+        OR      A
+        JR      TOP_OUT_EXIT
+TOP_OUT_TRUE:
+        SCF
+TOP_OUT_EXIT:
+        POP     HL
+        POP     DE
+        POP     BC
+        RET
+
+; ENTER_GAME_OVER
+; Input:
+;   A = game-over reason code
+; Output:
+;   GAME_OVER latched, active piece disabled, framebuffer rebuilt, LCD updated
+; Clobbers:
+;   A, B, HL
+ENTER_GAME_OVER:
+        PUSH    AF
+        XOR     A
+        LD      (ACTIVE_PIECE_ENABLED),A
+        LD      A,1
+        LD      (GAME_OVER),A
+        POP     AF
+        CALL    DIAG_SET
+        CALL    REBUILD_FRAMEBUFFER
+        JP      LCD_SHOW_GAME_OVER
 
 ; MERGE_ACTIVE_TO_BOARD
 ; Input:
@@ -1128,6 +1211,77 @@ DIAG_SET_FAULT_EXIT:
         POP     DE
         RET
 
+; LCD_BUSY
+; Input:
+;   none
+; Output:
+;   waits until LCD busy flag clears
+; Clobbers:
+;   none
+LCD_BUSY:
+        PUSH    AF
+LCD_BUSY_LOOP:
+        IN      A,(PORT_LCD_INST)
+        RLCA
+        JR      C,LCD_BUSY_LOOP
+        POP     AF
+        RET
+
+; LCD_COMMAND
+; Input:
+;   B = LCD instruction byte
+; Output:
+;   instruction sent to LCD
+; Clobbers:
+;   none
+LCD_COMMAND:
+        PUSH    AF
+        CALL    LCD_BUSY
+        LD      A,B
+        OUT     (PORT_LCD_INST),A
+        POP     AF
+        RET
+
+; LCD_STRING
+; Input:
+;   HL = zero-terminated ASCII string
+; Output:
+;   string written at current LCD cursor position
+; Clobbers:
+;   A, HL
+LCD_STRING:
+        LD      A,(HL)
+        INC     HL
+        OR      A
+        RET     Z
+        CALL    LCD_BUSY
+        OUT     (PORT_LCD_DATA),A
+        JR      LCD_STRING
+
+; LCD_SHOW_GAME_OVER
+; Input:
+;   none
+; Output:
+;   game-over text written to LCD
+; Clobbers:
+;   A, B, HL
+LCD_SHOW_GAME_OVER:
+        PUSH    BC
+        PUSH    HL
+        LD      B,0x01
+        CALL    LCD_COMMAND
+        LD      B,LCD_ROW1
+        CALL    LCD_COMMAND
+        LD      HL,LCD_TEXT_GAME_OVER
+        CALL    LCD_STRING
+        LD      B,LCD_ROW2
+        CALL    LCD_COMMAND
+        LD      HL,LCD_TEXT_RESET
+        CALL    LCD_STRING
+        POP     HL
+        POP     BC
+        RET
+
 ; Seven-segment patterns for 0..F, copied from MON-3 hexToSegmentTable.
 DIAG_SEG_TABLE:
         DB      0xEB
@@ -1146,6 +1300,12 @@ DIAG_SEG_TABLE:
         DB      0xEC
         DB      0xC7
         DB      0x47
+
+LCD_TEXT_GAME_OVER:
+        DB      "TETRO GAME OVER",0
+
+LCD_TEXT_RESET:
+        DB      "PRESS RESET",0
 
 ; Default 3x3-scale piece set with precomputed clockwise rotations.
 ; Shapes are centered in a 3x3 local frame where practical; the engine still
@@ -1377,6 +1537,12 @@ PENDING_ROTATION:
         DS      1
 
 PAUSED:
+        DS      1
+
+GAME_OVER:
+        DS      1
+
+ACTIVE_PIECE_ENABLED:
         DS      1
 
 DIAG_CODE:

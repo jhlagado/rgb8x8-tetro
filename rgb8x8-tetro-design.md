@@ -300,6 +300,19 @@ Collision logic must make the same distinction:
 
 Spawn logic should therefore allow a piece to exist partially off-screen above the top. A top-out condition happens only when a newly spawned piece cannot legally enter because its visible occupied cells already collide with landed board state.
 
+The current implementation target for top-out is basic state handling:
+
+- latch a `game over` state
+- stop movement / gravity / gameplay updates
+- leave the final landed board visible
+- prefer the LCD for user-facing game-over / status text rather than the `7`-seg
+
+Later presentation work can build on that state:
+
+- show a dedicated pattern or message on the matrix LEDs
+- update the LCD with game-over / play-again text
+- add a short game-over sound effect
+
 ## Time-sliced peripherals
 
 The same cooperative scan-sliced main loop that drives the `8x8` RGB matrix can also drive simple peripheral output without introducing a separate scheduler.
@@ -314,6 +327,8 @@ The intended model is the same as the matrix scan:
 - do a small fixed amount of peripheral work each main-loop pass
 - rely on persistence of vision for multiplexed visual hardware
 - keep each task bounded so the overall row-to-row timing stays reasonably even
+
+User-facing status and diagnostic text should prefer the LCD. The `7`-segment display is a better fit for compact score/HUD data once scoring exists.
 
 ### Seven-segment scoring
 
