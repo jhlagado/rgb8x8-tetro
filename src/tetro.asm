@@ -71,12 +71,14 @@ K_ROTATE_ALT:   EQU     0x03
 K_ROTATE_CCW_ALT: EQU   0x02
 K_DROP:         EQU     0x00
 K_PAUSE:        EQU     0x0F
+NO_KEY:         EQU     0xFF
 
 ; Matrix / game constants
 ROW_COUNT:      EQU     8
 BYTES_PER_ROW:  EQU     4
 FRAMEBUFFER_BYTES: EQU  32
 MOVE_PERIOD:    EQU     16
+DROP_PERIOD:    EQU     1
 ; Decremented once per full 8-slice pass (in slice 1). Larger = slower fall.
 GRAVITY_PERIOD: EQU     128
 X_MIN:          EQU     0
@@ -110,7 +112,6 @@ INIT_STATE:
         XOR     A
         LD      (GAME_OVER),A
         LD      (ACTIVE_PIECE_ENABLED),A
-        LD      (LAST_KEY),A
         LD      (DIAG_LATCH),A
         LD      (FRAME_PHASE),A
         LD      (LOGIC_SLICE),A
@@ -118,6 +119,8 @@ INIT_STATE:
         LD      (CURRENT_ROTATION),A
         LD      (CURRENT_PIECE_INDEX),A
         LD      (NEXT_PIECE_INDEX),A
+        LD      A,NO_KEY
+        LD      (LAST_KEY),A
 
         LD      A,SCAN_MASK_START
         LD      (SCAN_MASK),A
@@ -127,6 +130,7 @@ INIT_STATE:
 
         CALL    CLEAR_BOARD
         CALL    SPAWN_ACTIVE_PIECE
+        CALL    LCD_SHOW_RUNNING
         JP      REBUILD_FRAMEBUFFER
 
 ; Output one scanline, then advance persistent scan state.
@@ -318,6 +322,10 @@ KEY_NEW_PRESS:
         LD      A,E
         CP      K_PAUSE
         JP      Z,HANDLE_PAUSE_KEY
+        LD      A,(PAUSED)
+        OR      A
+        JP      NZ,RESET_MOVE_RATE
+        LD      A,E
         CP      K_ROTATE
         JP      Z,HANDLE_ROTATE_PRESS
         CP      K_ROTATE_CCW
@@ -340,15 +348,19 @@ HANDLE_DIRECTION_KEY:
 RESET_MOVE_RATE:
         LD      A,MOVE_PERIOD
         LD      (MOVE_COOLDOWN),A
-        XOR     A
+        LD      A,NO_KEY
         LD      (LAST_KEY),A
+        XOR     A
+        LD      (DROP_LOCKOUT),A
         RET
 
 HANDLE_PAUSE_KEY:
-        JR      NC,RESET_MOVE_RATE
         LD      A,(PAUSED)
         XOR     1
         LD      (PAUSED),A
+        OR      A
+        CALL    NZ,LCD_SHOW_PAUSED
+        CALL    Z,LCD_SHOW_RUNNING
         JP      RESET_MOVE_RATE
 
 HANDLE_ROTATE_PRESS:
@@ -393,7 +405,14 @@ SAME_DIRECTION:
         LD      (MOVE_COOLDOWN),A
         RET     NZ
 
+        LD      A,E
+        CP      K_DROP
+        JR      NZ,HELD_DIRECTION_NORMAL_RATE
+        LD      A,DROP_PERIOD
+        JR      HELD_DIRECTION_RATE_SET
+HELD_DIRECTION_NORMAL_RATE:
         LD      A,MOVE_PERIOD
+HELD_DIRECTION_RATE_SET:
         LD      (MOVE_COOLDOWN),A
         LD      A,E
         CP      K_LEFT
@@ -464,6 +483,9 @@ MOVE_LEFT_COMMIT:
         RET
 
 HANDLE_KEY_DROP:
+        LD      A,(DROP_LOCKOUT)
+        OR      A
+        RET     NZ
         LD      A,K_DROP
         JP      HANDLE_HELD_DIRECTION
 
@@ -521,6 +543,8 @@ SOFT_DROP:
         LD      E,A
         CALL    CHECK_COLLISION_AT_DE
         JR      NC,SOFT_DROP_COMMIT
+        LD      A,1
+        LD      (DROP_LOCKOUT),A
         LD      A,1
         CALL    DIAG_SET_FAULT
         JR      LOCK_ACTIVE_PIECE
@@ -798,7 +822,7 @@ SPAWN_ACTIVE_PIECE:
         LD      (MOVE_COOLDOWN),A
         LD      A,GRAVITY_PERIOD
         LD      (GRAVITY_COOLDOWN),A
-        XOR     A
+        LD      A,NO_KEY
         LD      (LAST_KEY),A
         LD      A,3
         LD      (PENDING_X),A
@@ -1282,6 +1306,54 @@ LCD_SHOW_GAME_OVER:
         POP     BC
         RET
 
+; LCD_SHOW_PAUSED
+; Input:
+;   none
+; Output:
+;   pause text written to LCD
+; Clobbers:
+;   A, B, HL
+LCD_SHOW_PAUSED:
+        PUSH    BC
+        PUSH    HL
+        LD      B,0x01
+        CALL    LCD_COMMAND
+        LD      B,LCD_ROW1
+        CALL    LCD_COMMAND
+        LD      HL,LCD_TEXT_PAUSED
+        CALL    LCD_STRING
+        LD      B,LCD_ROW2
+        CALL    LCD_COMMAND
+        LD      HL,LCD_TEXT_RESUME
+        CALL    LCD_STRING
+        POP     HL
+        POP     BC
+        RET
+
+; LCD_SHOW_RUNNING
+; Input:
+;   none
+; Output:
+;   running text written to LCD
+; Clobbers:
+;   A, B, HL
+LCD_SHOW_RUNNING:
+        PUSH    BC
+        PUSH    HL
+        LD      B,0x01
+        CALL    LCD_COMMAND
+        LD      B,LCD_ROW1
+        CALL    LCD_COMMAND
+        LD      HL,LCD_TEXT_RUNNING
+        CALL    LCD_STRING
+        LD      B,LCD_ROW2
+        CALL    LCD_COMMAND
+        LD      HL,LCD_TEXT_CONTROLS
+        CALL    LCD_STRING
+        POP     HL
+        POP     BC
+        RET
+
 ; Seven-segment patterns for 0..F, copied from MON-3 hexToSegmentTable.
 DIAG_SEG_TABLE:
         DB      0xEB
@@ -1306,6 +1378,18 @@ LCD_TEXT_GAME_OVER:
 
 LCD_TEXT_RESET:
         DB      "PRESS RESET",0
+
+LCD_TEXT_PAUSED:
+        DB      "TETRO PAUSED",0
+
+LCD_TEXT_RESUME:
+        DB      "F TO RESUME",0
+
+LCD_TEXT_RUNNING:
+        DB      "TETRO RUNNING",0
+
+LCD_TEXT_CONTROLS:
+        DB      "0 DROP F PAUSE",0
 
 ; Default 3x3-scale piece set with precomputed clockwise rotations.
 ; Shapes are centered in a 3x3 local frame where practical; the engine still
@@ -1537,6 +1621,9 @@ PENDING_ROTATION:
         DS      1
 
 PAUSED:
+        DS      1
+
+DROP_LOCKOUT:
         DS      1
 
 GAME_OVER:

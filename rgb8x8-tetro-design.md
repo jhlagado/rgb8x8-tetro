@@ -330,6 +330,13 @@ The intended model is the same as the matrix scan:
 
 User-facing status and diagnostic text should prefer the LCD. The `7`-segment display is a better fit for compact score/HUD data once scoring exists.
 
+Current control-state intent:
+
+- `F` toggles pause
+- while paused, gameplay updates stop and only the pause-toggle input should be honored
+- pause and running state should be communicated on the LCD
+- `0` is soft drop and should repeat faster than normal lateral movement
+
 ### Seven-segment scoring
 
 The `7`-segment display is a good fit for score or small HUD data.
