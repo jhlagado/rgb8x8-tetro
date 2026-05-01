@@ -451,12 +451,6 @@ HELD_DIRECTION_RATE_SET:
 ;   A, D, E
 MOVE_RIGHT:
         LD      A,(PLAYER_X)
-        LD      C,A
-        LD      A,(CURRENT_PIECE_RIGHT)
-        ADD     A,C
-        CP      ROW_COUNT-1
-        RET     Z
-        LD      A,C
         INC     A
         LD      (PENDING_X),A
         LD      A,(PLAYER_Y)
@@ -1792,9 +1786,9 @@ PIECE_I3_R0:
         DB      %00000000
         DB      %00000000
 PIECE_I3_R1:
-        DB      %01000000
-        DB      %01000000
-        DB      %01000000
+        DB      %10000000
+        DB      %10000000
+        DB      %10000000
         DB      %00000000
 PIECE_I3_R2:
         DB      %00000000
@@ -1802,9 +1796,9 @@ PIECE_I3_R2:
         DB      %00000000
         DB      %00000000
 PIECE_I3_R3:
-        DB      %01000000
-        DB      %01000000
-        DB      %01000000
+        DB      %10000000
+        DB      %10000000
+        DB      %10000000
         DB      %00000000
 
 PIECE_O_R0:
@@ -1834,9 +1828,9 @@ PIECE_T_R0:
         DB      %00000000
         DB      %00000000
 PIECE_T_R1:
-        DB      %01000000
-        DB      %01100000
-        DB      %01000000
+        DB      %10000000
+        DB      %11000000
+        DB      %10000000
         DB      %00000000
 PIECE_T_R2:
         DB      %00000000
@@ -1855,9 +1849,9 @@ PIECE_S_R0:
         DB      %00000000
         DB      %00000000
 PIECE_S_R1:
+        DB      %10000000
+        DB      %11000000
         DB      %01000000
-        DB      %01100000
-        DB      %00100000
         DB      %00000000
 PIECE_S_R2:
         DB      %00000000
@@ -1876,9 +1870,9 @@ PIECE_Z_R0:
         DB      %00000000
         DB      %00000000
 PIECE_Z_R1:
-        DB      %00100000
-        DB      %01100000
         DB      %01000000
+        DB      %11000000
+        DB      %10000000
         DB      %00000000
 PIECE_Z_R2:
         DB      %00000000
@@ -1897,9 +1891,9 @@ PIECE_J_R0:
         DB      %00000000
         DB      %00000000
 PIECE_J_R1:
-        DB      %01100000
-        DB      %01000000
-        DB      %01000000
+        DB      %11000000
+        DB      %10000000
+        DB      %10000000
         DB      %00000000
 PIECE_J_R2:
         DB      %00000000
@@ -1918,9 +1912,9 @@ PIECE_L_R0:
         DB      %00000000
         DB      %00000000
 PIECE_L_R1:
-        DB      %01000000
-        DB      %01000000
-        DB      %01100000
+        DB      %10000000
+        DB      %10000000
+        DB      %11000000
         DB      %00000000
 PIECE_L_R2:
         DB      %00000000
@@ -1952,13 +1946,13 @@ PIECE_BOTTOM_TABLE:
         DB      1,2,2,2
 
 PIECE_RIGHT_TABLE:
-        DB      2,1,2,1
+        DB      2,0,2,0
         DB      1,1,1,1
-        DB      2,2,2,1
-        DB      2,2,2,1
-        DB      2,2,2,1
-        DB      2,2,2,1
-        DB      2,2,2,1
+        DB      2,1,2,1
+        DB      2,1,2,1
+        DB      2,1,2,1
+        DB      2,1,2,1
+        DB      2,1,2,1
 
 PIECE_COLOR_TABLE:
         DB      COLOR_GREEN+COLOR_BLUE              ; I3 = cyan
@@ -2013,6 +2007,9 @@ CURRENT_PIECE_BOTTOM:
         DS      1
 
 CURRENT_PIECE_RIGHT:
+        DS      1
+
+CURRENT_PIECE_SHIFT_BIAS:
         DS      1
 
 CURRENT_PIECE_COLOR:
