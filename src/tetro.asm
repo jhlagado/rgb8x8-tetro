@@ -39,9 +39,9 @@
 ;       byte 1 = green plane
 ;       byte 2 = blue plane
 ;       byte 3 = aux plane (reserved, not currently scanned)
-;   - A monochrome landed board is rendered first.
-;   - The active object is a 4x4 bitmap blitted in white over the board.
-;   - Current test shape: T piece, rotation 0.
+;   - The landed board is stored as RGB bitplanes plus monochrome occupancy.
+;   - The active object is a 4x4 bitmap blitted in its piece colour over the board.
+;   - Pieces are selected from a deterministic 7-piece cycle.
 ;   - Code and constant tables live together above an explicit RAM block.
 ;     Mutable state and framebuffers are laid out from RAM_START and are
 ;     initialized by INIT_STATE rather than relying on embedded ROM values.
@@ -80,13 +80,16 @@ FRAMEBUFFER_BYTES: EQU  32
 MOVE_PERIOD:    EQU     16
 DROP_PERIOD:    EQU     1
 ; Decremented once per full 8-slice pass (in slice 1). Larger = slower fall.
-GRAVITY_PERIOD: EQU     128
+GRAVITY_PERIOD: EQU     160
 X_MIN:          EQU     0
 Y_MIN:          EQU     0
 Y_MAX:          EQU     7
 SPAWN_Y:        EQU     0xFD
 PIECE_COUNT:    EQU     7
 SCAN_MASK_START: EQU    0x01
+COLOR_RED:      EQU     0x01
+COLOR_GREEN:    EQU     0x02
+COLOR_BLUE:     EQU     0x04
 
 START:
         CALL    INIT_STATE
@@ -670,12 +673,12 @@ COPY_BACK_TO_FRONT:
 ; Input:
 ;   none
 ; Output:
-;   BOARD_ROWS cleared to zero
+;   BOARD_ROWS and landed RGB planes cleared to zero
 ; Clobbers:
 ;   A, B, HL
 CLEAR_BOARD:
         LD      HL,BOARD_ROWS
-        LD      B,ROW_COUNT
+        LD      B,ROW_COUNT*4
         XOR     A
 CLEAR_BOARD_LOOP:
         LD      (HL),A
@@ -690,7 +693,8 @@ CLEAR_BOARD_LOOP:
 ;   NEXT_PIECE_INDEX in RAM
 ; Output:
 ;   CURRENT_PIECE_INDEX / CURRENT_ROTATION updated
-;   CURRENT_PIECE_PTR / CURRENT_PIECE_BOTTOM / CURRENT_PIECE_RIGHT updated
+;   CURRENT_PIECE_PTR / CURRENT_PIECE_BOTTOM / CURRENT_PIECE_RIGHT /
+;   CURRENT_PIECE_COLOR updated
 ;   NEXT_PIECE_INDEX advanced modulo PIECE_COUNT
 ; Clobbers:
 ;   A, BC, DE, HL
@@ -736,6 +740,16 @@ LOAD_CURRENT_ROTATION_STATE:
         ADD     HL,DE
         LD      A,(HL)
         LD      (CURRENT_PIECE_RIGHT),A
+
+        PUSH    DE
+        LD      A,(CURRENT_PIECE_INDEX)
+        LD      E,A
+        LD      D,0
+        LD      HL,PIECE_COLOR_TABLE
+        ADD     HL,DE
+        LD      A,(HL)
+        LD      (CURRENT_PIECE_COLOR),A
+        POP     DE
 
         LD      HL,PIECE_PTR_TABLE
         ADD     HL,DE
@@ -849,27 +863,46 @@ SPAWN_FAILED:
 
 ; RENDER_BOARD_TO_BACK
 ; Input:
-;   BOARD_ROWS, FRAMEBUFFER_BACK
+;   BOARD_RED / BOARD_GREEN / BOARD_BLUE, FRAMEBUFFER_BACK
 ; Output:
-;   landed board ORed into FRAMEBUFFER_BACK in white
+;   landed board copied into FRAMEBUFFER_BACK in native colours
 ; Clobbers:
-;   A, C
+;   A, C, D, E
 RENDER_BOARD_TO_BACK:
         PUSH    BC
         PUSH    DE
         PUSH    HL
-        LD      HL,BOARD_ROWS
-        LD      DE,FRAMEBUFFER_BACK
+        LD      HL,FRAMEBUFFER_BACK
         LD      B,ROW_COUNT
+        LD      C,0
 RENDER_BOARD_ROW:
+        LD      E,C
+        LD      D,0
+        PUSH    HL
+        LD      HL,BOARD_RED
+        ADD     HL,DE
         LD      A,(HL)
-        LD      C,A
-        EX      DE,HL
-        CALL    WRITE_WHITE_ROW_MASK
+        POP     HL
+        LD      (HL),A
+        INC     HL
+
+        PUSH    HL
+        LD      HL,BOARD_GREEN
+        ADD     HL,DE
+        LD      A,(HL)
+        POP     HL
+        LD      (HL),A
+        INC     HL
+
+        PUSH    HL
+        LD      HL,BOARD_BLUE
+        ADD     HL,DE
+        LD      A,(HL)
+        POP     HL
+        LD      (HL),A
         INC     HL
         INC     HL
-        EX      DE,HL
-        INC     HL
+        INC     C
         DJNZ    RENDER_BOARD_ROW
 RENDER_BOARD_TO_BACK_EXIT:
         POP     HL
@@ -880,9 +913,9 @@ RENDER_BOARD_TO_BACK_EXIT:
 ; Draw the active 4x4 bitmap into the back buffer (same layout as live FB).
 ; RENDER_ACTIVE_TO_BACK
 ; Input:
-;   PLAYER_X, PLAYER_Y, CURRENT_PIECE_PTR
+;   PLAYER_X, PLAYER_Y, CURRENT_PIECE_PTR, CURRENT_PIECE_COLOR
 ; Output:
-;   active piece ORed into FRAMEBUFFER_BACK in white
+;   active piece ORed into FRAMEBUFFER_BACK in piece colour
 ; Clobbers:
 ;   A, C
 RENDER_ACTIVE_TO_BACK:
@@ -920,7 +953,7 @@ RENDER_SHAPE_ROW:
         LD      D,0
         LD      HL,FRAMEBUFFER_BACK
         ADD     HL,DE
-        CALL    WRITE_WHITE_ROW_MASK
+        CALL    WRITE_COLORED_ROW_MASK
         POP     DE
         POP     HL
 RENDER_SHAPE_NEXT_ROW:
@@ -1092,9 +1125,9 @@ ENTER_GAME_OVER:
 
 ; MERGE_ACTIVE_TO_BOARD
 ; Input:
-;   PLAYER_X, PLAYER_Y, CURRENT_PIECE_PTR
+;   PLAYER_X, PLAYER_Y, CURRENT_PIECE_PTR, CURRENT_PIECE_COLOR
 ; Output:
-;   active piece ORed into BOARD_ROWS
+;   active piece ORed into BOARD_ROWS and landed RGB planes
 ; Clobbers:
 ;   A, C
 MERGE_ACTIVE_TO_BOARD:
@@ -1133,6 +1166,48 @@ MERGE_BOARD_ROW:
         LD      (HL),A
         POP     DE
         POP     HL
+        PUSH    HL
+        PUSH    DE
+        LD      A,(CURRENT_PIECE_COLOR)
+        BIT     0,A
+        JR      Z,MERGE_SKIP_RED
+        LD      H,0
+        LD      DE,BOARD_RED
+        ADD     HL,DE
+        LD      A,(HL)
+        OR      C
+        LD      (HL),A
+MERGE_SKIP_RED:
+        POP     DE
+        POP     HL
+        PUSH    HL
+        PUSH    DE
+        LD      A,(CURRENT_PIECE_COLOR)
+        BIT     1,A
+        JR      Z,MERGE_SKIP_GREEN
+        LD      H,0
+        LD      DE,BOARD_GREEN
+        ADD     HL,DE
+        LD      A,(HL)
+        OR      C
+        LD      (HL),A
+MERGE_SKIP_GREEN:
+        POP     DE
+        POP     HL
+        PUSH    HL
+        PUSH    DE
+        LD      A,(CURRENT_PIECE_COLOR)
+        BIT     2,A
+        JR      Z,MERGE_SKIP_BLUE
+        LD      H,0
+        LD      DE,BOARD_BLUE
+        ADD     HL,DE
+        LD      A,(HL)
+        OR      C
+        LD      (HL),A
+MERGE_SKIP_BLUE:
+        POP     DE
+        POP     HL
 MERGE_BOARD_NEXT:
         INC     DE
         INC     HL
@@ -1143,31 +1218,43 @@ MERGE_ACTIVE_TO_BOARD_EXIT:
         POP     BC
         RET
 
-; OR mask C into red, green, and blue of the row (HL = row R on entry).
+; OR mask C into the colour planes selected by CURRENT_PIECE_COLOR.
 ; On exit, HL = this row's blue (aux byte 3 not used by scan, not written).
-; WRITE_WHITE_ROW_MASK
+; WRITE_COLORED_ROW_MASK
 ; Input:
 ;   HL = framebuffer row red-byte address
 ;   C  = row mask
 ; Output:
-;   mask ORed into red, green, blue bytes
+;   mask ORed into enabled red, green, blue bytes
 ;   HL = blue-byte address on return
 ; Clobbers:
 ;   A, HL
-WRITE_WHITE_ROW_MASK:
+WRITE_COLORED_ROW_MASK:
+        LD      A,(CURRENT_PIECE_COLOR)
+        BIT     0,A
+        JR      Z,WRITE_SKIP_RED
         LD      A,(HL)
         OR      C
         LD      (HL),A
+WRITE_SKIP_RED:
         INC     HL
 
+        LD      A,(CURRENT_PIECE_COLOR)
+        BIT     1,A
+        JR      Z,WRITE_SKIP_GREEN
         LD      A,(HL)
         OR      C
         LD      (HL),A
+WRITE_SKIP_GREEN:
         INC     HL
 
+        LD      A,(CURRENT_PIECE_COLOR)
+        BIT     2,A
+        JR      Z,WRITE_SKIP_BLUE
         LD      A,(HL)
         OR      C
         LD      (HL),A
+WRITE_SKIP_BLUE:
         RET
 
 ; Shift row mask in A right by SHIFT_COUNT positions to place it at global x.
@@ -1568,6 +1655,15 @@ PIECE_RIGHT_TABLE:
         DB      2,2,2,1
         DB      2,2,2,1
 
+PIECE_COLOR_TABLE:
+        DB      COLOR_GREEN+COLOR_BLUE              ; I3 = cyan
+        DB      COLOR_RED+COLOR_GREEN+COLOR_BLUE   ; O  = white
+        DB      COLOR_RED+COLOR_BLUE               ; T  = magenta
+        DB      COLOR_GREEN                        ; S  = green
+        DB      COLOR_RED                          ; Z  = red
+        DB      COLOR_BLUE                         ; J  = blue
+        DB      COLOR_RED+COLOR_GREEN              ; L  = yellow
+
 ; RAM layout.
 ; These bytes are mutable program state. INIT_STATE sets explicit defaults
 ; and clears the buffers that need a known startup value.
@@ -1614,6 +1710,9 @@ CURRENT_PIECE_BOTTOM:
 CURRENT_PIECE_RIGHT:
         DS      1
 
+CURRENT_PIECE_COLOR:
+        DS      1
+
 NEXT_PIECE_INDEX:
         DS      1
 
@@ -1651,6 +1750,15 @@ SCAN_PTR:
         DS      2
 
 BOARD_ROWS:
+        DS      ROW_COUNT
+
+BOARD_RED:
+        DS      ROW_COUNT
+
+BOARD_GREEN:
+        DS      ROW_COUNT
+
+BOARD_BLUE:
         DS      ROW_COUNT
 
 BOARD_EMPTY:

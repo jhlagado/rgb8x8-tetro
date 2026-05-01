@@ -470,6 +470,13 @@ When a piece locks:
 
 This keeps shape geometry independent from colour and matches the scan-native framebuffer model directly.
 
+The current implementation keeps both:
+
+- monochrome occupancy rows for collision
+- landed RGB bitplanes for rendering
+
+That is slightly redundant, but it keeps collision logic simple while the game is still under active development.
+
 ## Collision strategy
 
 True collision detection should be done by occupied-bit overlap on each relevant scanline.
