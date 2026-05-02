@@ -93,7 +93,11 @@ SERVICE_SOUND_ACTIVE:
         LD      (SPEAKER_PORT_STATE),A
         RET
 
-; SCAN_SCORE_DIGIT
+; SCAN_SCORE_DIGIT — time-multiplex HUD + PWM speaker on PORT_DIGITS.
+; Brief: first OUT publishes segment data on PORT_SEGS with digit driver showing
+; only SPEAKER_PORT_STATE on PORT_DIGITS; second OUT ORs DIGIT_MASK_TABLE[C] into
+; PORT_DIGITS so one cathode/anode selects the active digit without clobbering
+; the speaker line (speaker + digit select share the latch).
 ; Input:
 ;   HUD_SEG_BUFFER / HUD_SCAN_INDEX / SPEAKER_PORT_STATE
 ; Output:
