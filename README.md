@@ -36,6 +36,19 @@ This target therefore keeps the design narrow:
 - movement is frame-gated so a held key does not step every scan tick
 - one 4x4-bitmap test shape is drawn
 
+## Building
+
+Assembler output (**`.hex`**, **`.bin`**, **`.lst`**) should live under **`build/`** (ignored by git), matching `debug80.json` **`outputDir`**.
+
+With **[asm80](https://www.npmjs.com/package/asm80)**, paths are resolved from the directory of the main source file, so run it **from `src/`** and point **`-o`** at **`../build/...`**:
+
+```bash
+mkdir -p build
+(cd src && asm80 -m Z80 -t hex -o ../build/tetro.hex tetro.asm)
+```
+
+## Design / next steps
+
 Once this loop is solid, more ambitious layers can be added on top:
 
 - score and status via LCD or 7-segment MON-3 routines
@@ -43,4 +56,4 @@ Once this loop is solid, more ambitious layers can be added on top:
 - scrolling
 - simple games
 
-See [rgb8x8-tetro-design.md](/Users/johnhardy/Documents/projects/rgb8x8-tetro/rgb8x8-tetro-design.md) for the next-step falling-block game structure extracted from the Arduino reference, but adapted to the TEC-1G scan model.
+See [rgb8x8-tetro-design.md](rgb8x8-tetro-design.md) for the next-step falling-block game structure extracted from the Arduino reference, but adapted to the TEC-1G scan model.
