@@ -1835,6 +1835,9 @@ SERVICE_SOUND_ACTIVE:
 SCAN_SCORE_DIGIT:
         LD      A,(HUD_SCAN_INDEX)
         LD      C,A
+        LD      A,(SPEAKER_PORT_STATE)
+        OUT     (PORT_DIGITS),A
+        LD      A,C
         LD      L,A
         LD      H,0
         LD      DE,HUD_SEG_BUFFER
@@ -1870,7 +1873,7 @@ SCAN_SCORE_DIGIT_SAVE:
 ; Clobbers:
 ;   A, BC, DE, HL
 UPDATE_SCORE_DISPLAY:
-        XOR     A
+        LD      A,(DIAG_SEG_TABLE)
         LD      (HUD_SEG_BUFFER),A
         LD      HL,(SCORE_LO)
         LD      BC,HUD_SEG_BUFFER+1
