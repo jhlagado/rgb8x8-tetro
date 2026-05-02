@@ -386,6 +386,13 @@ A practical first model is:
 - when due, toggle the speaker control bit
 - treat sound generation as just another very small service slice synchronized with the same main loop that scans the matrix
 
+Initial sound hooks should be event-driven:
+
+- successful rotate
+- ordinary lock
+- line clear
+- game over
+
 That keeps sound generation cooperative and bounded, just like the display scan tasks.
 
 ### Scheduling implications

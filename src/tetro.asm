@@ -92,6 +92,14 @@ COLOR_RED:      EQU     0x01
 COLOR_GREEN:    EQU     0x02
 COLOR_BLUE:     EQU     0x04
 SPEAKER_BIT:    EQU     0x80
+SOUND_ROTATE_LEN: EQU   24
+SOUND_ROTATE_DIV: EQU   2
+SOUND_LOCK_LEN: EQU     32
+SOUND_LOCK_DIV: EQU     4
+SOUND_CLEAR_LEN: EQU    72
+SOUND_CLEAR_DIV: EQU    2
+SOUND_GAME_OVER_LEN: EQU 120
+SOUND_GAME_OVER_DIV: EQU 6
 
 START:
         CALL    INIT_STATE
@@ -131,11 +139,16 @@ INIT_STATE:
         LD      (LINES_CLEARED_TOTAL),A
         LD      (SCORE_LO),A
         LD      (SCORE_HI),A
+        LD      A,1
+        LD      (INPUT_LOCKOUT),A
         LD      A,NO_KEY
         LD      (LAST_KEY),A
         XOR     A
         LD      (HUD_SCAN_INDEX),A
         LD      (SPEAKER_PORT_STATE),A
+        LD      (SOUND_TIMER),A
+        LD      (SOUND_DIVIDER_RELOAD),A
+        LD      (SOUND_DIVIDER_COUNT),A
 
         LD      A,SCAN_MASK_START
         LD      (SCAN_MASK),A
@@ -178,6 +191,7 @@ SCAN_TICK:
         LD      A,(SCAN_MASK)
         OUT     (PORT_ROW),A
 
+        CALL    SERVICE_SOUND
         CALL    SCAN_SCORE_DIGIT
         CALL    ADVANCE_SCAN_STATE
         RET
@@ -239,6 +253,12 @@ LOGIC_TICK_CLEAR_DONE:
         CALL    POLL_INPUT_AND_UPDATE
         RET
 LOGIC_TICK_ACTIVE:
+        LD      A,(INPUT_LOCKOUT)
+        OR      A
+        JR      Z,LOGIC_TICK_LOCKOUT_DONE
+        CALL    WAIT_FOR_KEY_RELEASE
+        RET
+LOGIC_TICK_LOCKOUT_DONE:
         LD      A,(LOGIC_SLICE)
         AND     7
         CP      0
@@ -401,6 +421,21 @@ POLL_GAME_OVER_RESTART:
         RST     0x10
         RET     NC
         JP      INIT_STATE
+
+; WAIT_FOR_KEY_RELEASE
+; Input:
+;   INPUT_LOCKOUT
+; Output:
+;   clears INPUT_LOCKOUT once no key is pressed
+; Clobbers:
+;   A, C
+WAIT_FOR_KEY_RELEASE:
+        LD      C,API_SCANKEYS
+        RST     0x10
+        RET     Z
+        XOR     A
+        LD      (INPUT_LOCKOUT),A
+        RET
 
 HANDLE_PAUSE_KEY:
         LD      A,(PAUSED)
@@ -603,6 +638,7 @@ LOCK_ACTIVE_PIECE:
         CALL    MERGE_ACTIVE_TO_BOARD
         CALL    CHECK_FULL_ROWS
         JR      NC,LOCK_ACTIVE_NO_CLEAR
+        CALL    SOUND_TRIGGER_CLEAR
         XOR     A
         LD      (ACTIVE_PIECE_ENABLED),A
         LD      A,1
@@ -611,6 +647,7 @@ LOCK_ACTIVE_PIECE:
         LD      (CLEAR_TIMER),A
         RET
 LOCK_ACTIVE_NO_CLEAR:
+        CALL    SOUND_TRIGGER_LOCK
         CALL    SPAWN_ACTIVE_PIECE
         RET
 
@@ -838,6 +875,7 @@ ROTATE_CW:
         LD      (CURRENT_ROTATION),A
         JP      LOAD_CURRENT_ROTATION_STATE
 ROTATE_CW_COMMIT:
+        CALL    SOUND_TRIGGER_ROTATE
         LD      A,GRAVITY_PERIOD
         LD      (GRAVITY_COOLDOWN),A
         RET
@@ -871,6 +909,7 @@ ROTATE_LEFT_DEC:
         LD      (CURRENT_ROTATION),A
         JP      LOAD_CURRENT_ROTATION_STATE
 ROTATE_LEFT_COMMIT:
+        CALL    SOUND_TRIGGER_ROTATE
         LD      A,GRAVITY_PERIOD
         LD      (GRAVITY_COOLDOWN),A
         RET
@@ -1203,6 +1242,7 @@ ENTER_GAME_OVER:
         LD      (GAME_OVER),A
         POP     AF
         CALL    DIAG_SET
+        CALL    SOUND_TRIGGER_GAME_OVER
         CALL    REBUILD_FRAMEBUFFER
         JP      LCD_SHOW_GAME_OVER
 
@@ -1688,6 +1728,101 @@ DIAG_SET_FAULT:
         JP      DIAG_SET
 DIAG_SET_FAULT_EXIT:
         POP     DE
+        RET
+
+; SOUND_START
+; Input:
+;   A = duration in scan ticks
+;   C = divider reload / half-period
+; Output:
+;   speaker state machine restarted
+; Clobbers:
+;   A
+SOUND_START:
+        LD      (SOUND_TIMER),A
+        LD      A,C
+        LD      (SOUND_DIVIDER_RELOAD),A
+        LD      (SOUND_DIVIDER_COUNT),A
+        XOR     A
+        LD      (SPEAKER_PORT_STATE),A
+        RET
+
+; SOUND_TRIGGER_ROTATE
+; Input:
+;   none
+; Output:
+;   short rotate buzz started
+; Clobbers:
+;   A, C
+SOUND_TRIGGER_ROTATE:
+        LD      A,SOUND_ROTATE_LEN
+        LD      C,SOUND_ROTATE_DIV
+        JP      SOUND_START
+
+; SOUND_TRIGGER_LOCK
+; Input:
+;   none
+; Output:
+;   short lock buzz started
+; Clobbers:
+;   A, C
+SOUND_TRIGGER_LOCK:
+        LD      A,SOUND_LOCK_LEN
+        LD      C,SOUND_LOCK_DIV
+        JP      SOUND_START
+
+; SOUND_TRIGGER_CLEAR
+; Input:
+;   none
+; Output:
+;   line-clear buzz started
+; Clobbers:
+;   A, C
+SOUND_TRIGGER_CLEAR:
+        LD      A,SOUND_CLEAR_LEN
+        LD      C,SOUND_CLEAR_DIV
+        JP      SOUND_START
+
+; SOUND_TRIGGER_GAME_OVER
+; Input:
+;   none
+; Output:
+;   game-over buzz started
+; Clobbers:
+;   A, C
+SOUND_TRIGGER_GAME_OVER:
+        LD      A,SOUND_GAME_OVER_LEN
+        LD      C,SOUND_GAME_OVER_DIV
+        JP      SOUND_START
+
+; SERVICE_SOUND
+; Input:
+;   SOUND_TIMER / SOUND_DIVIDER_RELOAD / SOUND_DIVIDER_COUNT
+; Output:
+;   SPEAKER_PORT_STATE updated for current scan pass
+; Clobbers:
+;   A
+SERVICE_SOUND:
+        LD      A,(SOUND_TIMER)
+        OR      A
+        RET     Z
+        DEC     A
+        LD      (SOUND_TIMER),A
+        JR      NZ,SERVICE_SOUND_ACTIVE
+        XOR     A
+        LD      (SPEAKER_PORT_STATE),A
+        LD      (SOUND_DIVIDER_COUNT),A
+        RET
+SERVICE_SOUND_ACTIVE:
+        LD      A,(SOUND_DIVIDER_COUNT)
+        DEC     A
+        LD      (SOUND_DIVIDER_COUNT),A
+        RET     NZ
+        LD      A,(SOUND_DIVIDER_RELOAD)
+        LD      (SOUND_DIVIDER_COUNT),A
+        LD      A,(SPEAKER_PORT_STATE)
+        XOR     SPEAKER_BIT
+        LD      (SPEAKER_PORT_STATE),A
         RET
 
 ; SCAN_SCORE_DIGIT
@@ -2242,10 +2377,22 @@ SCORE_LO:
 SCORE_HI:
         DS      1
 
+INPUT_LOCKOUT:
+        DS      1
+
 HUD_SCAN_INDEX:
         DS      1
 
 SPEAKER_PORT_STATE:
+        DS      1
+
+SOUND_TIMER:
+        DS      1
+
+SOUND_DIVIDER_RELOAD:
+        DS      1
+
+SOUND_DIVIDER_COUNT:
         DS      1
 
 HUD_SEG_BUFFER:
