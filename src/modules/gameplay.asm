@@ -118,7 +118,7 @@ SCAN_TICK:
 ; Input:
 ;   uses SCAN_MASK / SCAN_PTR from RAM
 ; Output:
-;   updated SCAN_MASK / SCAN_PTR, FRAME_PHASE incremented on wrap
+;   updated SCAN_MASK / SCAN_PTR; FRAME_PHASE incremented once per full framebuffer wrap (splash RNG bootstrap helper—not gameplay timers).
 ; Clobbers:
 ;   A, HL, DE
 ADVANCE_SCAN_STATE:
@@ -271,7 +271,7 @@ LOGIC_SLICE_NEXT:
 ; Input:
 ;   none
 ; Output:
-;   may update PLAYER_X / MOVE_COOLDOWN / LAST_KEY
+;   may update PLAYER_X / MOVE_COOLDOWN / LAST_KEY / SOFT_DROP via keyed handlers, or JR to CLEAR_INPUT_REPEAT_STATE when no key is pressed (idle / repeat reset path).
 ; Clobbers:
 ;   A, C, D, E
 POLL_INPUT_AND_UPDATE:
@@ -398,11 +398,9 @@ HANDLE_KEY_LEFT:
         LD      A,K_LEFT
         ; fall through
 
-; Input:
-;   A = direction key (K_LEFT or K_RIGHT)
 ; HANDLE_HELD_DIRECTION
 ; Input:
-;   A = movement/drop key code
+;   A = K_LEFT, K_RIGHT, or K_DROP (held path; LAST_KEY/MOVE_COOLDOWN gate repeats)
 ; Output:
 ;   may update PLAYER_X / PLAYER_Y / MOVE_COOLDOWN / LAST_KEY
 ; Clobbers:
@@ -411,14 +409,14 @@ HANDLE_HELD_DIRECTION:
         LD      E,A
         LD      A,(LAST_KEY)
         CP      E
-        JR      Z,SAME_DIRECTION
+        JR      Z,HELD_SAME_KEY
 
         LD      A,E
         LD      (LAST_KEY),A
         LD      A,1
         LD      (MOVE_COOLDOWN),A
 
-SAME_DIRECTION:
+HELD_SAME_KEY:
         LD      A,(MOVE_COOLDOWN)
         DEC     A
         LD      (MOVE_COOLDOWN),A
@@ -1043,7 +1041,7 @@ RENDER_ACTIVE_TO_BACK_EXIT:
         POP     BC
         RET
 
-; Candidate placement test.
+; Candidate placement test (same MSB-left column convention as SHIFT_ROW_MASK / board occupancy nibbles).
 ; Input:
 ;   D = candidate x
 ;   E = candidate y
@@ -1648,7 +1646,7 @@ WRITE_SKIP_GREEN:
 WRITE_SKIP_BLUE:
         RET
 
-; Shift row mask in A right by SHIFT_COUNT positions to place it at global x.
+; Shift row mask in A right by SHIFT_COUNT (logical player column; MSB is playfield-left before each SRL).
 ; SHIFT_ROW_MASK
 ; Input:
 ;   A = unshifted row mask

@@ -25,7 +25,7 @@ K_DROP:         EQU     0x00
 K_PAUSE:        EQU     0x0F
 NO_KEY:         EQU     0xFF
 
-; Matrix / game constants
+; Matrix / game constants — ROW_COUNT is playfield width in cells (columns), not scan rows.
 ROW_COUNT:      EQU     8
 BYTES_PER_ROW:  EQU     4
 FRAMEBUFFER_BYTES: EQU  32

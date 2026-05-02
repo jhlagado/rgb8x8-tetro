@@ -335,6 +335,29 @@ LCD_SHOW_SPLASH:
         POP     BC
         RET
 
+; LCD_REFRESH_NEXT_PREVIEW_ROW
+; HUD row 3: NEXT banner + preview letter from NEXT_PIECE_INDEX / PIECE_NAME_TABLE.
+; Input: none. Clobbers: A, B, HL (L/H/DE used for table lookup).
+LCD_REFRESH_NEXT_PREVIEW_ROW:
+        PUSH    BC
+        PUSH    HL
+        LD      B,0x01
+        CALL    LCD_COMMAND
+        LD      B,LCD_ROW3
+        CALL    LCD_COMMAND
+        LD      HL,LCD_TEXT_NEXT
+        CALL    LCD_STRING
+        LD      A,(NEXT_PIECE_INDEX)
+        LD      L,A
+        LD      H,0
+        LD      DE,PIECE_NAME_TABLE
+        ADD     HL,DE
+        LD      A,(HL)
+        CALL    LCD_PUTC
+        POP     HL
+        POP     BC
+        RET
+
 ; LCD_SHOW_RUNNING
 ; Input:
 ;   none
@@ -356,17 +379,7 @@ LCD_SHOW_RUNNING:
         CALL    LCD_COMMAND
         LD      HL,LCD_TEXT_STATE_RUNNING
         CALL    LCD_STRING
-        LD      B,LCD_ROW3
-        CALL    LCD_COMMAND
-        LD      HL,LCD_TEXT_NEXT
-        CALL    LCD_STRING
-        LD      A,(NEXT_PIECE_INDEX)
-        LD      L,A
-        LD      H,0
-        LD      DE,PIECE_NAME_TABLE
-        ADD     HL,DE
-        LD      A,(HL)
-        CALL    LCD_PUTC
+        CALL    LCD_REFRESH_NEXT_PREVIEW_ROW
         POP     HL
         POP     DE
         POP     BC
