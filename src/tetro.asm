@@ -60,6 +60,8 @@ PORT_BLUE:      EQU     0xF9
 
 LCD_ROW1:       EQU     0x80
 LCD_ROW2:       EQU     0xC0
+LCD_ROW3:       EQU     0x94
+LCD_ROW4:       EQU     0xD4
 
 ; MON-3 API / keypad constants
 API_SCANKEYS:   EQU     16
@@ -82,6 +84,7 @@ DROP_PERIOD:    EQU     1
 ; Decremented once per full 8-slice pass (in slice 1). Larger = slower fall.
 GRAVITY_PERIOD: EQU     160
 LINE_CLEAR_HOLD: EQU    24
+RNG_SEED_INIT:  EQU     0x5A
 X_MIN:          EQU     0
 Y_MIN:          EQU     0
 Y_MAX:          EQU     7
@@ -117,6 +120,38 @@ MAIN_LOOP:
 ; Clobbers:
 ;   A, HL
 INIT_STATE:
+        CALL    INIT_STATE_BASE
+        LD      A,1
+        LD      (SPLASH_TIMER),A
+        CALL    LCD_SHOW_SPLASH
+        JP      REBUILD_FRAMEBUFFER
+
+; INIT_STATE_RESTART
+; Input:
+;   none
+; Output:
+;   initialized runtime state for immediate post-game restart
+; Clobbers:
+;   A, HL
+INIT_STATE_RESTART:
+        CALL    INIT_STATE_BASE
+        XOR     A
+        LD      (SPLASH_TIMER),A
+        CALL    RNG_NEXT_PIECE
+        LD      (NEXT_PIECE_INDEX),A
+        CALL    SPAWN_ACTIVE_PIECE
+        CALL    UPDATE_SCORE_DISPLAY
+        CALL    LCD_SHOW_RUNNING
+        JP      REBUILD_FRAMEBUFFER
+
+; INIT_STATE_BASE
+; Input:
+;   none
+; Output:
+;   common runtime state initialized in RAM
+; Clobbers:
+;   A, HL
+INIT_STATE_BASE:
         LD      A,MOVE_PERIOD
         LD      (MOVE_COOLDOWN),A
         LD      A,GRAVITY_PERIOD
@@ -157,10 +192,8 @@ INIT_STATE:
         LD      (SCAN_PTR),HL
 
         CALL    CLEAR_BOARD
-        CALL    SPAWN_ACTIVE_PIECE
         CALL    UPDATE_SCORE_DISPLAY
-        CALL    LCD_SHOW_RUNNING
-        JP      REBUILD_FRAMEBUFFER
+        RET
 
 ; Output one scanline, then advance persistent scan state.
 ; SCAN_TICK
@@ -241,6 +274,12 @@ LOGIC_TICK:
         CALL    POLL_GAME_OVER_RESTART
         RET
 LOGIC_TICK_GAME_OVER_DONE:
+        LD      A,(SPLASH_TIMER)
+        OR      A
+        JR      Z,LOGIC_TICK_SPLASH_DONE
+        CALL    HANDLE_SPLASH_STATE
+        RET
+LOGIC_TICK_SPLASH_DONE:
         LD      A,(CLEAR_PENDING)
         OR      A
         JR      Z,LOGIC_TICK_CLEAR_DONE
@@ -374,12 +413,12 @@ POLL_INPUT_AND_UPDATE:
         JR      HANDLE_DIRECTION_KEY
 
 KEY_NEW_PRESS:
+        LD      A,(PAUSED)
+        OR      A
+        JP      NZ,HANDLE_UNPAUSE_KEY
         LD      A,E
         CP      K_PAUSE
         JP      Z,HANDLE_PAUSE_KEY
-        LD      A,(PAUSED)
-        OR      A
-        JP      NZ,RESET_MOVE_RATE
         LD      A,E
         CP      K_ROTATE
         JP      Z,HANDLE_ROTATE_PRESS
@@ -420,7 +459,7 @@ POLL_GAME_OVER_RESTART:
         LD      C,API_SCANKEYS
         RST     0x10
         RET     NC
-        JP      INIT_STATE
+        JP      INIT_STATE_RESTART
 
 ; WAIT_FOR_KEY_RELEASE
 ; Input:
@@ -442,8 +481,17 @@ HANDLE_PAUSE_KEY:
         XOR     1
         LD      (PAUSED),A
         OR      A
-        CALL    NZ,LCD_SHOW_PAUSED
-        CALL    Z,LCD_SHOW_RUNNING
+        JR      Z,HANDLE_PAUSE_SHOW_RUNNING
+        CALL    LCD_SHOW_PAUSED
+        JP      RESET_MOVE_RATE
+HANDLE_PAUSE_SHOW_RUNNING:
+        CALL    LCD_SHOW_RUNNING
+        JP      RESET_MOVE_RATE
+
+HANDLE_UNPAUSE_KEY:
+        XOR     A
+        LD      (PAUSED),A
+        CALL    LCD_SHOW_RUNNING
         JP      RESET_MOVE_RATE
 
 HANDLE_ROTATE_PRESS:
@@ -791,13 +839,44 @@ SELECT_NEXT_PIECE:
         LD      (CURRENT_ROTATION),A
         CALL    LOAD_CURRENT_ROTATION_STATE
 
-        LD      A,(NEXT_PIECE_INDEX)
-        INC     A
-        CP      PIECE_COUNT
-        JR      C,SELECT_NEXT_PIECE_SAVE
-        XOR     A
-SELECT_NEXT_PIECE_SAVE:
+        CALL    RNG_NEXT_PIECE
         LD      (NEXT_PIECE_INDEX),A
+        RET
+
+; RNG_NEXT_PIECE
+; Input:
+;   RNG_SEED
+; Output:
+;   A = next piece index 0..6
+;   RNG_SEED advanced
+; Clobbers:
+;   A
+RNG_NEXT_PIECE:
+        CALL    RNG_NEXT8
+        AND     0x07
+        CP      PIECE_COUNT
+        JR      NC,RNG_NEXT_PIECE
+        RET
+
+; RNG_NEXT8
+; Input:
+;   RNG_SEED
+; Output:
+;   A = next pseudo-random byte
+;   RNG_SEED advanced
+; Clobbers:
+;   A
+RNG_NEXT8:
+        LD      A,(RNG_SEED)
+        OR      A
+        JR      NZ,RNG_NEXT8_STEP
+        LD      A,RNG_SEED_INIT
+RNG_NEXT8_STEP:
+        SRL     A
+        JR      NC,RNG_NEXT8_SAVE
+        XOR     0xB8
+RNG_NEXT8_SAVE:
+        LD      (RNG_SEED),A
         RET
 
 ; LOAD_CURRENT_ROTATION_STATE
@@ -948,9 +1027,11 @@ SPAWN_ACTIVE_PIECE:
         LD      (ACTIVE_PIECE_ENABLED),A
         LD      A,(DIAG_LATCH)
         OR      A
-        RET     NZ
+        JR      NZ,SPAWN_ACTIVE_HUD
         XOR     A
         CALL    DIAG_SET
+SPAWN_ACTIVE_HUD:
+        CALL    LCD_SHOW_RUNNING
         RET
 SPAWN_FAILED:
         LD      A,2
@@ -1245,6 +1326,34 @@ ENTER_GAME_OVER:
         CALL    SOUND_TRIGGER_GAME_OVER
         CALL    REBUILD_FRAMEBUFFER
         JP      LCD_SHOW_GAME_OVER
+
+; HANDLE_SPLASH_STATE
+; Input:
+;   SPLASH_TIMER / FRAME_PHASE
+; Output:
+;   waits for a fresh key press, then seeds the RNG and starts a new game
+; Clobbers:
+;   A, C
+HANDLE_SPLASH_STATE:
+        LD      C,API_SCANKEYS
+        RST     0x10
+        RET     NC
+        XOR     A
+        LD      (SPLASH_TIMER),A
+        LD      A,(FRAME_PHASE)
+        OR      A
+        JR      NZ,HANDLE_SPLASH_SEED_READY
+        LD      A,RNG_SEED_INIT
+HANDLE_SPLASH_SEED_READY:
+        LD      (RNG_SEED),A
+        CALL    RNG_NEXT_PIECE
+        LD      (NEXT_PIECE_INDEX),A
+        LD      A,1
+        LD      (INPUT_LOCKOUT),A
+        CALL    SPAWN_ACTIVE_PIECE
+        CALL    UPDATE_SCORE_DISPLAY
+        CALL    LCD_SHOW_RUNNING
+        JP      REBUILD_FRAMEBUFFER
 
 ; HANDLE_LINE_CLEAR_STATE
 ; Input:
@@ -1997,6 +2106,10 @@ LCD_SHOW_GAME_OVER:
         CALL    LCD_STRING
         LD      B,LCD_ROW2
         CALL    LCD_COMMAND
+        LD      HL,LCD_TEXT_STATE_GAME_OVER
+        CALL    LCD_STRING
+        LD      B,LCD_ROW3
+        CALL    LCD_COMMAND
         LD      HL,LCD_TEXT_RESET
         CALL    LCD_STRING
         POP     HL
@@ -2021,7 +2134,43 @@ LCD_SHOW_PAUSED:
         CALL    LCD_STRING
         LD      B,LCD_ROW2
         CALL    LCD_COMMAND
+        LD      HL,LCD_TEXT_STATE_PAUSED
+        CALL    LCD_STRING
+        LD      B,LCD_ROW3
+        CALL    LCD_COMMAND
         LD      HL,LCD_TEXT_RESUME
+        CALL    LCD_STRING
+        POP     HL
+        POP     BC
+        RET
+
+; LCD_SHOW_SPLASH
+; Input:
+;   none
+; Output:
+;   startup title and key mapping text written to LCD
+; Clobbers:
+;   A, B, HL
+LCD_SHOW_SPLASH:
+        PUSH    BC
+        PUSH    HL
+        LD      B,0x01
+        CALL    LCD_COMMAND
+        LD      B,LCD_ROW1
+        CALL    LCD_COMMAND
+        LD      HL,LCD_TEXT_SPLASH_TITLE
+        CALL    LCD_STRING
+        LD      B,LCD_ROW2
+        CALL    LCD_COMMAND
+        LD      HL,LCD_TEXT_SPLASH_MOVE
+        CALL    LCD_STRING
+        LD      B,LCD_ROW3
+        CALL    LCD_COMMAND
+        LD      HL,LCD_TEXT_SPLASH_ROTATE
+        CALL    LCD_STRING
+        LD      B,LCD_ROW4
+        CALL    LCD_COMMAND
+        LD      HL,LCD_TEXT_SPLASH_DROP
         CALL    LCD_STRING
         POP     HL
         POP     BC
@@ -2031,11 +2180,12 @@ LCD_SHOW_PAUSED:
 ; Input:
 ;   none
 ; Output:
-;   running text written to LCD
+;   live gameplay HUD written to LCD
 ; Clobbers:
-;   A, B, HL
+;   A, B, C, D, E, HL
 LCD_SHOW_RUNNING:
         PUSH    BC
+        PUSH    DE
         PUSH    HL
         LD      B,0x01
         CALL    LCD_COMMAND
@@ -2045,11 +2195,78 @@ LCD_SHOW_RUNNING:
         CALL    LCD_STRING
         LD      B,LCD_ROW2
         CALL    LCD_COMMAND
-        LD      HL,LCD_TEXT_CONTROLS
+        LD      HL,LCD_TEXT_STATE_RUNNING
         CALL    LCD_STRING
+        LD      B,LCD_ROW3
+        CALL    LCD_COMMAND
+        LD      HL,LCD_TEXT_NEXT
+        CALL    LCD_STRING
+        LD      A,(NEXT_PIECE_INDEX)
+        LD      L,A
+        LD      H,0
+        LD      DE,PIECE_NAME_TABLE
+        ADD     HL,DE
+        LD      A,(HL)
+        CALL    LCD_PUTC
         POP     HL
+        POP     DE
         POP     BC
         RET
+
+; LCD_PUTC
+; Input:
+;   A = ASCII character
+; Output:
+;   character written at current LCD cursor position
+; Clobbers:
+;   A
+LCD_PUTC:
+        PUSH    AF
+        CALL    LCD_BUSY
+        POP     AF
+        OUT     (PORT_LCD_DATA),A
+        RET
+
+; LCD_WRITE_DECIMAL3
+; Input:
+;   A = value 0..255
+; Output:
+;   three decimal digits written to LCD
+; Clobbers:
+;   A, B, C
+LCD_WRITE_DECIMAL3:
+        LD      C,A
+        LD      B,0
+LCD_WRITE_HUNDREDS:
+        LD      A,C
+        CP      100
+        JR      C,LCD_WRITE_HUNDREDS_DONE
+        SUB     100
+        LD      C,A
+        INC     B
+        JR      LCD_WRITE_HUNDREDS
+LCD_WRITE_HUNDREDS_DONE:
+        LD      A,B
+        ADD     A,'0'
+        CALL    LCD_PUTC
+
+        LD      B,0
+LCD_WRITE_TENS:
+        LD      A,C
+        CP      10
+        JR      C,LCD_WRITE_TENS_DONE
+        SUB     10
+        LD      C,A
+        INC     B
+        JR      LCD_WRITE_TENS
+LCD_WRITE_TENS_DONE:
+        LD      A,B
+        ADD     A,'0'
+        CALL    LCD_PUTC
+
+        LD      A,C
+        ADD     A,'0'
+        JP      LCD_PUTC
 
 ; Seven-segment patterns for 0..F, copied from MON-3 hexToSegmentTable.
 DIAG_SEG_TABLE:
@@ -2089,21 +2306,45 @@ ROW_BIT_TABLE:
         DB      0x80
 
 LCD_TEXT_GAME_OVER:
-        DB      "TETRO GAME OVER",0
+        DB      "TETRO",0
 
 LCD_TEXT_RESET:
         DB      "PRESS ANY KEY",0
 
 LCD_TEXT_PAUSED:
-        DB      "TETRO PAUSED",0
+        DB      "TETRO",0
 
 LCD_TEXT_RESUME:
-        DB      "F TO RESUME",0
+        DB      "ANY KEY RESUME",0
 
 LCD_TEXT_RUNNING:
-        DB      "TETRO RUNNING",0
+        DB      "TETRO",0
 
-LCD_TEXT_CONTROLS:
+LCD_TEXT_STATE_RUNNING:
+        DB      "RUNNING",0
+
+LCD_TEXT_STATE_PAUSED:
+        DB      "PAUSED",0
+
+LCD_TEXT_STATE_GAME_OVER:
+        DB      "GAME OVER",0
+
+LCD_TEXT_NEXT:
+        DB      "NEXT: ",0
+
+PIECE_NAME_TABLE:
+        DB      'I','O','T','S','Z','J','L'
+
+LCD_TEXT_SPLASH_TITLE:
+        DB      "TETRO",0
+
+LCD_TEXT_SPLASH_MOVE:
+        DB      "< > MOVE",0
+
+LCD_TEXT_SPLASH_ROTATE:
+        DB      "AD/GO ROTATE",0
+
+LCD_TEXT_SPLASH_DROP:
         DB      "0 DROP F PAUSE",0
 
 ; Default 3x3-scale piece set with precomputed clockwise rotations.
@@ -2378,6 +2619,12 @@ SCORE_LO:
         DS      1
 
 SCORE_HI:
+        DS      1
+
+SPLASH_TIMER:
+        DS      1
+
+RNG_SEED:
         DS      1
 
 INPUT_LOCKOUT:

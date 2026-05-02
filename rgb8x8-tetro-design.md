@@ -369,6 +369,36 @@ Initial scoring baseline:
 
 Also track total cleared rows separately from score. Ordinary piece locks do not award score.
 
+Current UI split:
+
+- `7`-segment display: score
+- LCD during normal play: explicit running-state plus total lines and next-piece indicator
+- LCD during paused/game-over states: status/instruction text
+- LCD on startup: splash/title plus key mappings, waiting for a key press to begin
+
+### Piece selection
+
+Piece selection should now be random rather than deterministic cycling.
+
+Recommended baseline:
+
+- maintain a small PRNG state byte in RAM
+- use the splash-screen wait duration as the primary seed source
+- keep a fixed nonzero fallback seed in code if the splash counter happens to be zero
+- select the current piece from `NEXT_PIECE_INDEX`
+- immediately generate the following `NEXT_PIECE_INDEX` for preview
+
+For a 7-piece set, avoid naive modulo bias. A practical first approach is:
+
+- generate 3 random bits
+- reject value `7`
+- accept `0..6`
+
+Later enhancement:
+
+- seed from runtime entropy such as user key timing, optionally mixed with `R`
+- keep fixed-seed mode available for testing
+
 ### Simple speaker output
 
 Simple sound effects can also fit the same model.
