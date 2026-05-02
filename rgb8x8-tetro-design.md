@@ -849,7 +849,7 @@ Work here is tracked as GitHub issues grouped into sequence tiers **P1** (do fir
 
 | Tier | Theme | Scope (files) | Issue |
 |------|--------|----------------|--------|
-| P1 | Input/gameplay hygiene + LCD noise | `gameplay.asm`: pending→DE loads; duplicate comment cleanup around `HANDLE_HELD_DIRECTION`; consistent `JP`/structure for `HANDLE_KEY_LEFT` / `HANDLE_KEY_RIGHT`; rename `RESET_MOVE_RATE`; gate `LCD_SHOW_RUNNING` inside `SPAWN_ACTIVE_PIECE`. `ui.asm`: clarify comment for `SCAN_SCORE_DIGIT`. | [#6](https://github.com/jhlagado/rgb8x8-tetro/issues/6) |
+| P1 | Input/gameplay hygiene + LCD noise | `gameplay.asm`: pending→DE loads; duplicate comment cleanup around `HANDLE_HELD_DIRECTION`; consistent `JP`/structure for `HANDLE_KEY_LEFT` / `HANDLE_KEY_RIGHT`; rename `CLEAR_INPUT_REPEAT_STATE` (was `RESET_MOVE_RATE`); gate `LCD_SHOW_RUNNING` inside `SPAWN_ACTIVE_PIECE`. `ui.asm`: clarify comment for `SCAN_SCORE_DIGIT`. | [#6](https://github.com/jhlagado/rgb8x8-tetro/issues/6) |
 | P2 | ROM / table hygiene | `data.asm`: `PIECE_PTR_TABLE` alias / duplicate rotation table consolidation. | [#7](https://github.com/jhlagado/rgb8x8-tetro/issues/7) |
 | P3 | Mechanical refactors | `gameplay.asm`: `COPY_BOARD_ROW_DE_TO_E` and `CLEAR_BOARD_ROW_D` — unify colour-plane loops. | [#8](https://github.com/jhlagado/rgb8x8-tetro/issues/8) |
 | P3b | LCD boilerplate collapse | `ui.asm`: factor shared setup across `LCD_SHOW_*` helpers. | [#9](https://github.com/jhlagado/rgb8x8-tetro/issues/9) |
@@ -868,7 +868,7 @@ Maps to the numbered findings from the codebase review (same order as the review
 7. **`LCD_SHOW_*`** — repeated LCD dispatch boilerplate (**P3b**).
 8. **`SCAN_SCORE_DIGIT`** — comment accuracy / intent vs digit scan scheduling (**P1** in `ui.asm`).
 9. **Rotation / piece tables in ROM** — pointer or rotation table alias duplication (`PIECE_PTR_TABLE` / rotation entries) (**P2**).
-10. **Misc nits** — naming (`RESET_MOVE_RATE`, `HANDLE_HELD_DIRECTION` comment dup, `HANDLE_KEY_LEFT`/`RIGHT` style), `LCD_SHOW_RUNNING` gating at spawn, row/column naming (`ROW_COUNT`), `FRAME_PHASE` documentation; plus **seven defensive / clarity** items (header comments, extent vs collision authority, logic-slice duplication `LOGIC_SL2`–`SL6`, input `KEY_NEW_PRESS` vs `HANDLE_DIRECTION_KEY` polish, `ui.asm`/`data.asm` dedup pass, build artefacts vs source-of-truth) called out in design §Maintainability—fold into **P1**–**P4** issues as appropriate without changing timing or gameplay contract.
+10. **Misc nits** — naming (`CLEAR_INPUT_REPEAT_STATE` clarity vs old `RESET_MOVE_RATE`, `HANDLE_HELD_DIRECTION` comment dup, `HANDLE_KEY_LEFT`/`RIGHT` style), `LCD_SHOW_RUNNING` gating at spawn, row/column naming (`ROW_COUNT`), `FRAME_PHASE` documentation; plus **seven defensive / clarity** items (header comments, extent vs collision authority, logic-slice duplication `LOGIC_SL2`–`SL6`, input `KEY_NEW_PRESS` vs `HANDLE_DIRECTION_KEY` polish, `ui.asm`/`data.asm` dedup pass, build artefacts vs source-of-truth) called out in design §Maintainability—fold into **P1**–**P4** issues as appropriate without changing timing or gameplay contract.
 
 ## What not to copy from the Arduino code
 

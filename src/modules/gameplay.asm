@@ -277,24 +277,24 @@ LOGIC_SLICE_NEXT:
 POLL_INPUT_AND_UPDATE:
         LD      C,API_SCANKEYS
         RST     0x10
-        JR      NZ,RESET_MOVE_RATE
+        JR      NZ,CLEAR_INPUT_REPEAT_STATE
         LD      E,A
         JR      C,KEY_NEW_PRESS
         LD      A,E
         CP      K_PAUSE
-        JP      Z,RESET_MOVE_RATE
+        JP      Z,CLEAR_INPUT_REPEAT_STATE
         LD      A,(PAUSED)
         OR      A
-        JR      NZ,RESET_MOVE_RATE
+        JR      NZ,CLEAR_INPUT_REPEAT_STATE
         LD      A,E
         CP      K_ROTATE
-        JR      Z,RESET_MOVE_RATE
+        JR      Z,CLEAR_INPUT_REPEAT_STATE
         CP      K_ROTATE_CCW
-        JR      Z,RESET_MOVE_RATE
+        JR      Z,CLEAR_INPUT_REPEAT_STATE
         CP      K_ROTATE_ALT
-        JR      Z,RESET_MOVE_RATE
+        JR      Z,CLEAR_INPUT_REPEAT_STATE
         CP      K_ROTATE_CCW_ALT
-        JR      Z,RESET_MOVE_RATE
+        JR      Z,CLEAR_INPUT_REPEAT_STATE
         JR      HANDLE_DIRECTION_KEY
 
 KEY_NEW_PRESS:
@@ -324,7 +324,10 @@ HANDLE_DIRECTION_KEY:
         CP      K_DROP
         JP      Z,HANDLE_KEY_DROP
 
-RESET_MOVE_RATE:
+; CLEAR_INPUT_REPEAT_STATE
+; Restores MOVE_COOLDOWN full period, clears LAST_KEY and soft-drop latch.
+; Used when leaving held-autorepeat path (invalid/no key, pause, rotate presses, etc.).
+CLEAR_INPUT_REPEAT_STATE:
         LD      A,MOVE_PERIOD
         LD      (MOVE_COOLDOWN),A
         LD      A,NO_KEY
@@ -368,24 +371,24 @@ HANDLE_PAUSE_KEY:
         OR      A
         JR      Z,HANDLE_PAUSE_SHOW_RUNNING
         CALL    LCD_SHOW_PAUSED
-        JP      RESET_MOVE_RATE
+        JP      CLEAR_INPUT_REPEAT_STATE
 HANDLE_PAUSE_SHOW_RUNNING:
         CALL    LCD_SHOW_RUNNING
-        JP      RESET_MOVE_RATE
+        JP      CLEAR_INPUT_REPEAT_STATE
 
 HANDLE_UNPAUSE_KEY:
         XOR     A
         LD      (PAUSED),A
         CALL    LCD_SHOW_RUNNING
-        JP      RESET_MOVE_RATE
+        JP      CLEAR_INPUT_REPEAT_STATE
 
 HANDLE_ROTATE_PRESS:
         CALL    ROTATE_CW
-        JP      RESET_MOVE_RATE
+        JP      CLEAR_INPUT_REPEAT_STATE
 
 HANDLE_ROTATE_CCW_PRESS:
         CALL    ROTATE_LEFT
-        JP      RESET_MOVE_RATE
+        JP      CLEAR_INPUT_REPEAT_STATE
 
 HANDLE_KEY_RIGHT:
         LD      A,K_RIGHT
