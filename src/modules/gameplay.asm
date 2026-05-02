@@ -277,24 +277,24 @@ LOGIC_SLICE_NEXT:
 POLL_INPUT_AND_UPDATE:
         LD      C,API_SCANKEYS
         RST     0x10
-        JR      NZ,RESET_MOVE_RATE
+        JR      NZ,CLEAR_INPUT_REPEAT_STATE
         LD      E,A
         JR      C,KEY_NEW_PRESS
         LD      A,E
         CP      K_PAUSE
-        JP      Z,RESET_MOVE_RATE
+        JP      Z,CLEAR_INPUT_REPEAT_STATE
         LD      A,(PAUSED)
         OR      A
-        JR      NZ,RESET_MOVE_RATE
+        JR      NZ,CLEAR_INPUT_REPEAT_STATE
         LD      A,E
         CP      K_ROTATE
-        JR      Z,RESET_MOVE_RATE
+        JR      Z,CLEAR_INPUT_REPEAT_STATE
         CP      K_ROTATE_CCW
-        JR      Z,RESET_MOVE_RATE
+        JR      Z,CLEAR_INPUT_REPEAT_STATE
         CP      K_ROTATE_ALT
-        JR      Z,RESET_MOVE_RATE
+        JR      Z,CLEAR_INPUT_REPEAT_STATE
         CP      K_ROTATE_CCW_ALT
-        JR      Z,RESET_MOVE_RATE
+        JR      Z,CLEAR_INPUT_REPEAT_STATE
         JR      HANDLE_DIRECTION_KEY
 
 KEY_NEW_PRESS:
@@ -324,7 +324,10 @@ HANDLE_DIRECTION_KEY:
         CP      K_DROP
         JP      Z,HANDLE_KEY_DROP
 
-RESET_MOVE_RATE:
+; CLEAR_INPUT_REPEAT_STATE
+; Restores MOVE_COOLDOWN full period, clears LAST_KEY and soft-drop latch.
+; Used when leaving held-autorepeat path (invalid/no key, pause, rotate presses, etc.).
+CLEAR_INPUT_REPEAT_STATE:
         LD      A,MOVE_PERIOD
         LD      (MOVE_COOLDOWN),A
         LD      A,NO_KEY
@@ -368,24 +371,24 @@ HANDLE_PAUSE_KEY:
         OR      A
         JR      Z,HANDLE_PAUSE_SHOW_RUNNING
         CALL    LCD_SHOW_PAUSED
-        JP      RESET_MOVE_RATE
+        JP      CLEAR_INPUT_REPEAT_STATE
 HANDLE_PAUSE_SHOW_RUNNING:
         CALL    LCD_SHOW_RUNNING
-        JP      RESET_MOVE_RATE
+        JP      CLEAR_INPUT_REPEAT_STATE
 
 HANDLE_UNPAUSE_KEY:
         XOR     A
         LD      (PAUSED),A
         CALL    LCD_SHOW_RUNNING
-        JP      RESET_MOVE_RATE
+        JP      CLEAR_INPUT_REPEAT_STATE
 
 HANDLE_ROTATE_PRESS:
         CALL    ROTATE_CW
-        JP      RESET_MOVE_RATE
+        JP      CLEAR_INPUT_REPEAT_STATE
 
 HANDLE_ROTATE_CCW_PRESS:
         CALL    ROTATE_LEFT
-        JP      RESET_MOVE_RATE
+        JP      CLEAR_INPUT_REPEAT_STATE
 
 HANDLE_KEY_RIGHT:
         LD      A,K_RIGHT
@@ -393,13 +396,11 @@ HANDLE_KEY_RIGHT:
 
 HANDLE_KEY_LEFT:
         LD      A,K_LEFT
-        ; fall through
+        JP      HANDLE_HELD_DIRECTION
 
-; Input:
-;   A = direction key (K_LEFT or K_RIGHT)
 ; HANDLE_HELD_DIRECTION
 ; Input:
-;   A = movement/drop key code
+;   A = K_LEFT, K_RIGHT, or K_DROP (held/repeat timing path via LAST_KEY/MOVE_COOLDOWN)
 ; Output:
 ;   may update PLAYER_X / PLAYER_Y / MOVE_COOLDOWN / LAST_KEY
 ; Clobbers:
@@ -436,6 +437,16 @@ HELD_DIRECTION_RATE_SET:
         CP      K_DROP
         JP      Z,SOFT_DROP
 
+; LOAD_DE_FROM_PENDING
+; Output: D = PENDING_X, E = PENDING_Y (arguments for CHECK_COLLISION_AT_DE)
+; Clobbers: A
+LOAD_DE_FROM_PENDING:
+        LD      A,(PENDING_X)
+        LD      D,A
+        LD      A,(PENDING_Y)
+        LD      E,A
+        RET
+
 ; MOVE_RIGHT
 ; Input:
 ;   none
@@ -449,10 +460,7 @@ MOVE_RIGHT:
         LD      (PENDING_X),A
         LD      A,(PLAYER_Y)
         LD      (PENDING_Y),A
-        LD      A,(PENDING_X)
-        LD      D,A
-        LD      A,(PENDING_Y)
-        LD      E,A
+        CALL    LOAD_DE_FROM_PENDING
         CALL    CHECK_COLLISION_AT_DE
         JR      NC,MOVE_RIGHT_COMMIT
         RET
@@ -476,10 +484,7 @@ MOVE_LEFT:
         LD      (PENDING_X),A
         LD      A,(PLAYER_Y)
         LD      (PENDING_Y),A
-        LD      A,(PENDING_X)
-        LD      D,A
-        LD      A,(PENDING_Y)
-        LD      E,A
+        CALL    LOAD_DE_FROM_PENDING
         CALL    CHECK_COLLISION_AT_DE
         JR      NC,MOVE_LEFT_COMMIT
         RET
@@ -516,10 +521,7 @@ APPLY_GRAVITY:
         LD      A,(PLAYER_Y)
         INC     A
         LD      (PENDING_Y),A
-        LD      A,(PENDING_X)
-        LD      D,A
-        LD      A,(PENDING_Y)
-        LD      E,A
+        CALL    LOAD_DE_FROM_PENDING
         CALL    CHECK_COLLISION_AT_DE
         JR      NC,GRAVITY_COMMIT
         JR      LOCK_ACTIVE_PIECE
@@ -541,10 +543,7 @@ SOFT_DROP:
         LD      A,(PLAYER_Y)
         INC     A
         LD      (PENDING_Y),A
-        LD      A,(PENDING_X)
-        LD      D,A
-        LD      A,(PENDING_Y)
-        LD      E,A
+        CALL    LOAD_DE_FROM_PENDING
         CALL    CHECK_COLLISION_AT_DE
         JR      NC,SOFT_DROP_COMMIT
         LD      A,1
@@ -876,6 +875,8 @@ ROTATE_LEFT_COMMIT:
 ; Output:
 ;   active-piece state reset to spawn position
 ;   returns fault if spawn collides immediately
+;   (`LCD_SHOW_RUNNING` left to callers on transitions that need UI refresh —
+;    e.g. INIT_STATE_RESTART, HANDLE_SPLASH_STATE; omitted on mid-game respawn.)
 ; Clobbers:
 ;   A, D, E
 SPAWN_ACTIVE_PIECE:
@@ -894,15 +895,11 @@ SPAWN_ACTIVE_PIECE:
         LD      (PENDING_X),A
         LD      A,SPAWN_Y
         LD      (PENDING_Y),A
-        LD      A,(PENDING_X)
-        LD      D,A
-        LD      A,(PENDING_Y)
-        LD      E,A
+        CALL    LOAD_DE_FROM_PENDING
         CALL    CHECK_COLLISION_AT_DE
         JR      C,SPAWN_FAILED
         LD      A,1
         LD      (ACTIVE_PIECE_ENABLED),A
-        CALL    LCD_SHOW_RUNNING
         RET
 SPAWN_FAILED:
         LD      A,0
