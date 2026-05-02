@@ -875,8 +875,8 @@ ROTATE_LEFT_COMMIT:
 ; Output:
 ;   active-piece state reset to spawn position
 ;   returns fault if spawn collides immediately
-;   (`LCD_SHOW_RUNNING` left to callers on transitions that need UI refresh —
-;    e.g. INIT_STATE_RESTART, HANDLE_SPLASH_STATE; omitted on mid-game respawn.)
+;   (Full `LCD_SHOW_RUNNING` left to splash/restart; each successful spawn
+;    refreshes row 3 next-piece preview via LCD_REFRESH_NEXT_PREVIEW_ROW.)
 ; Clobbers:
 ;   A, D, E
 SPAWN_ACTIVE_PIECE:
@@ -900,6 +900,7 @@ SPAWN_ACTIVE_PIECE:
         JR      C,SPAWN_FAILED
         LD      A,1
         LD      (ACTIVE_PIECE_ENABLED),A
+        CALL    LCD_REFRESH_NEXT_PREVIEW_ROW
         RET
 SPAWN_FAILED:
         LD      A,0
