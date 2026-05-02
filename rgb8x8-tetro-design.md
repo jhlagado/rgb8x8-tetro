@@ -53,6 +53,17 @@ Do not hard-code a RAM base yet. Instead, define a named RAM block at the end of
 
 Any runtime value that must start defined should be initialized by startup code. Do not rely on embedded mutable `DB` values in the code/data region as if they were ROM constants.
 
+The source is now also split structurally with `.include`:
+
+- constants include
+- top-level entry file for constants and `START` / `MAIN_LOOP`
+- gameplay/core logic module
+- UI/service module
+- data/table module
+- RAM layout module
+
+That split is organizational only. It should not change the scheduling or gameplay model.
+
 ## Logical layers
 
 The game should stay split into three layers:
