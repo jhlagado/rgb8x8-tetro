@@ -142,88 +142,90 @@ PIECE_T_R3:
         DB      %01000000
         DB      %00000000
 
+; Row bytes MSB = playfield-left. These four rotations match standard S/Z/J/L
+; lettering (`PIECE_NAME_TABLE` / LCD); the prior ROM had chiral pairs reversed.
 PIECE_S_R0:
-        DB      %01100000
         DB      %11000000
+        DB      %01100000
         DB      %00000000
         DB      %00000000
 PIECE_S_R1:
-        DB      %10000000
-        DB      %11000000
         DB      %01000000
+        DB      %11000000
+        DB      %10000000
         DB      %00000000
 PIECE_S_R2:
         DB      %00000000
-        DB      %01100000
         DB      %11000000
+        DB      %01100000
         DB      %00000000
 PIECE_S_R3:
-        DB      %10000000
-        DB      %11000000
         DB      %01000000
+        DB      %11000000
+        DB      %10000000
         DB      %00000000
 
 PIECE_Z_R0:
-        DB      %11000000
         DB      %01100000
+        DB      %11000000
         DB      %00000000
         DB      %00000000
 PIECE_Z_R1:
-        DB      %01000000
-        DB      %11000000
         DB      %10000000
+        DB      %11000000
+        DB      %01000000
         DB      %00000000
 PIECE_Z_R2:
         DB      %00000000
-        DB      %11000000
         DB      %01100000
+        DB      %11000000
         DB      %00000000
 PIECE_Z_R3:
-        DB      %01000000
-        DB      %11000000
         DB      %10000000
+        DB      %11000000
+        DB      %01000000
         DB      %00000000
 
 PIECE_J_R0:
-        DB      %10000000
+        DB      %00100000
         DB      %11100000
         DB      %00000000
         DB      %00000000
 PIECE_J_R1:
+        DB      %10000000
+        DB      %10000000
         DB      %11000000
-        DB      %10000000
-        DB      %10000000
         DB      %00000000
 PIECE_J_R2:
         DB      %00000000
         DB      %11100000
-        DB      %00100000
+        DB      %10000000
         DB      %00000000
 PIECE_J_R3:
-        DB      %01000000
-        DB      %01000000
         DB      %11000000
+        DB      %01000000
+        DB      %01000000
         DB      %00000000
 
 PIECE_L_R0:
-        DB      %00100000
+        DB      %10000000
         DB      %11100000
         DB      %00000000
         DB      %00000000
 PIECE_L_R1:
-        DB      %10000000
-        DB      %10000000
         DB      %11000000
+        DB      %10000000
+        DB      %10000000
         DB      %00000000
 PIECE_L_R2:
         DB      %00000000
         DB      %11100000
-        DB      %10000000
+        DB      %00100000
         DB      %00000000
 PIECE_L_R3:
+        DB      %01000000
+        DB      %01000000
         DB      %11000000
-        DB      %01000000
-        DB      %01000000
         DB      %00000000
 
 PIECE_PTR_TABLE:
