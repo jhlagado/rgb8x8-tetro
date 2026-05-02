@@ -31,7 +31,7 @@ That means:
 - game logic runs at a frame boundary
 - delays are counted in frames, not blind busy-waits
 
-The current `tetro.asm` already proves that loop shape at the simplest playable-object level.
+The thin top-level `src/tetro.asm` (`ORG`, `START`, `MAIN_LOOP`, and `.include` lines) plus `modules/gameplay.asm` already prove that loop shape at the simplest playable-object level.
 
 ## Memory layout
 
@@ -774,7 +774,50 @@ Use MON-3 key services and express behavior in frame counters:
 - held repeat
 - repeat period in frames
 
-That matches the current `tetro.asm` direction, including the newer scanline-sliced logic model.
+That matches the current codebase direction (`gameplay.asm` / scanline-sliced logic), including optional hooks in `ui.asm` for LCD and score digit scanning.
+
+## Maintainability and refactor notes
+
+This section records **code-quality** observations on the current Z80 source (as of `main` with the modular `.include` split). It does not change the gameplay or timing model above; it is planning for clarity and less duplication.
+
+### Module layout (actual build)
+
+- **`src/tetro.asm`** — `ORG`, entry, `MAIN_LOOP` only; includes everything else.
+- **`src/inc/constants.asm`** — ports, key codes, sizing `EQU`s, colour/sound timing constants.
+- **`src/modules/gameplay.asm`** — scan tick, logic slices, collision, merge, line clear, gravity, input debounce, splash/game-over hooks, etc.
+- **`src/modules/ui.asm`** — LCD strings, digit buffer, `SCAN_SCORE_DIGIT`, related helpers.
+- **`src/modules/data.asm`** — piece bitmaps, tables, LCD text blobs, `ROW_BIT_TABLE`, etc.
+- **`src/modules/ram.asm`** — single `RAM_START` block (`DS`) for all mutable state.
+
+Organizational split only: behaviour should stay identical to a monolithic file assembled to the same addresses.
+
+### Naming and documentation nits
+
+- **`ROW_COUNT`** is used throughout as the **playfield width / number of columns** (8), not “number of raster rows.” New readers trip on that. Consider an alias `FIELD_WIDTH EQU ROW_COUNT` or a one-line comment wherever it affects X bounds.
+- **`FRAME_PHASE`** is incremented on full matrix wrap; confirm in a short header comment whether it is **only** telemetry / splash timing or will drive future features, so it is not mistaken for the primary game timer (gravity and repeats use their own RAM timers).
+
+### Collision vs extent metadata (implementation discipline)
+
+- **`PIECE_RIGHT_TABLE` / `PIECE_BOTTOM_TABLE`** remain valid as **coarse** bounds helpers (spawn, sanitize, quick X reject in `CHECK_COLLISION_AT_DE`).
+- **Lateral movement** should treat **`CHECK_COLLISION_AT_DE`** (bitmask rows + board overlap) as the **authority** for “can this `(x,y)` placement exist?” Any separate fast path (e.g. `PLAYER_X + extent` only) can drift from rotation geometry; if a fast path exists, it must match the bitmap test or be removed.
+
+### Repetition worth drying up (low risk refactors)
+
+These are **small** helper extractions; they save mistakes more than they save bytes:
+
+1. **`PENDING_X` / `PENDING_Y` → `D` / `E`** — Many sites repeat `LD A,(PENDING_X); LD D,A; LD A,(PENDING_Y); LD E,A` before `CALL CHECK_COLLISION_AT_DE`. A single **`LOAD_DE_FROM_PENDING`** (or tail **`JP CHECK_COLLISION_AT_DE`** after stuffing `DE`) removes copy-paste drift.
+2. **`LOGIC_SL2` … `LOGIC_SL6`** — Five near-identical slices: **load offset**, **`CALL CLEAR_BACK_4`**, **`JR LOGIC_SLICE_NEXT`**. A tiny shared path (subroutine with offset in `A`, or a small offset table indexed by slice) keeps the slice model obvious and reduces typo risk in the constants (8, 12, 16, 20, 24).
+3. **`KEY_NEW_PRESS` vs `HANDLE_DIRECTION_KEY`** — Some redundant `LD A,E` / rotate key `CP`/`JP` chains could be unified later if the input state machine grows; optional polish only.
+
+### Peripheral and data modules (review backlog)
+
+- **`ui.asm`** and **`data.asm`** have not yet had the same **dedup / dead-label** pass as **`gameplay.asm`**. Plan: skim for duplicate LCD strings, unused routines, and table-only data that could be shared or renamed for grep-ability.
+
+### Build artifacts
+
+- Assembled **`.hex` / `.lst`** under **`build/`** (per `debug80.json`) are outputs, not source-of-truth; keep them out of git (already covered by `.gitignore`).
+
+---
 
 ## What to build next
 
